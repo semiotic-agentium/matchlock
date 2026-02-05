@@ -204,3 +204,63 @@ else
     exit 1
 fi
 """
+
+# =============================================================================
+# macOS tasks (Apple Silicon)
+# =============================================================================
+
+[tasks."darwin:build"]
+description = "Build and codesign CLI for macOS"
+run = """
+#!/usr/bin/env bash
+set -e
+mkdir -p bin
+
+# Create entitlements file
+cat > matchlock.entitlements << 'EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>com.apple.security.virtualization</key>
+    <true/>
+</dict>
+</plist>
+EOF
+
+go build -o bin/matchlock ./cmd/matchlock
+codesign --entitlements matchlock.entitlements -f -s - bin/matchlock
+echo "Built and signed bin/matchlock for macOS"
+"""
+
+[tasks."darwin:guest"]
+description = "Build ARM64 guest binaries for macOS VMs"
+run = """
+#!/usr/bin/env bash
+set -e
+mkdir -p $OUTPUT_DIR
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o $OUTPUT_DIR/guest-agent ./cmd/guest-agent
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o $OUTPUT_DIR/guest-fused ./cmd/guest-fused
+echo "Built ARM64 guest binaries in $OUTPUT_DIR"
+"""
+
+[tasks."darwin:setup"]
+description = "Full macOS setup (build + sign + guest binaries)"
+depends = ["darwin:build", "darwin:guest"]
+run = """
+#!/usr/bin/env bash
+echo ""
+echo "============================================"
+echo "Matchlock macOS setup complete!"
+echo "============================================"
+echo ""
+echo "Guest binaries installed to $OUTPUT_DIR"
+echo ""
+echo "Test with:"
+echo "  ./bin/matchlock run --image alpine:latest echo 'Hello from macOS VM!'"
+"""
+
+[tasks."darwin:test"]
+description = "Quick test on macOS"
+depends = ["darwin:build", "darwin:guest"]
+run = "./bin/matchlock run --image alpine:latest echo 'Matchlock works on macOS!'"

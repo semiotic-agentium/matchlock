@@ -20,45 +20,73 @@ matchlock/
 │   └── guest-fused/      # In-VM FUSE daemon for VFS
 ├── pkg/
 │   ├── api/              # Core types (Config, VM, Events, Hooks)
+│   ├── client/           # Client library for connecting to sandboxes
 │   ├── image/            # OCI/Docker image builder
 │   ├── kernel/           # Kernel version management and OCI distribution
-│   ├── sandbox/          # Core sandbox management
-│   ├── vm/               # VM backend interface
-│   │   └── linux/        # Linux/Firecracker implementation
 │   ├── net/              # Network stack (TAP, HTTP/TLS MITM, CA injection)
 │   ├── policy/           # Policy engine (allowlists, secrets)
-│   ├── vfs/              # Virtual filesystem providers and server
-│   ├── vsock/            # Vsock communication layer
+│   ├── rpc/              # JSON-RPC handler
+│   ├── sandbox/          # Core sandbox management
+│   ├── sdk/              # Go SDK for programmatic sandbox usage
 │   ├── state/            # VM state management
-│   └── rpc/              # JSON-RPC handler
+│   ├── vfs/              # Virtual filesystem providers and server
+│   │   └── client/       # VFS client for guest FUSE
+│   ├── vm/               # VM backend interface
+│   │   ├── darwin/       # macOS/Virtualization.framework implementation
+│   │   └── linux/        # Linux/Firecracker implementation
+│   └── vsock/            # Vsock communication layer
+├── internal/
+│   ├── images/           # Internal image handling utilities
+│   └── mitm/             # MITM proxy internals
+├── guest/
+│   ├── kernel/           # Guest kernel build configs
+│   ├── initramfs/        # Guest initramfs setup
+│   └── fused/            # Guest FUSE daemon resources
+├── sdk/
+│   └── python/           # Python SDK
+├── docs/
+│   └── adr/              # Architecture Decision Records
+├── examples/
+│   ├── go/               # Go usage examples
+│   └── python/           # Python usage examples
 ├── scripts/              # Build scripts for kernel/rootfs
 └── bin/                  # Built binaries
 ```
 
 ## Build Commands
 
+This project uses [mise](https://mise.jdx.dev/) for task management and dev dependencies.
+
 ```bash
-# Build all packages
-go build ./...
+# Install mise (if not already installed)
+# See https://mise.jdx.dev/getting-started.html
+
+# Install dev dependencies (Go, golangci-lint, crane)
+mise install
+
+# List all available tasks
+mise tasks
 
 # Build CLI binary
-go build -o bin/matchlock ./cmd/matchlock
+mise run build
 
-# Build guest binaries (static for rootfs)
-CGO_ENABLED=0 go build -o bin/guest-agent ./cmd/guest-agent
-CGO_ENABLED=0 go build -o bin/guest-fused ./cmd/guest-fused
+# Build CLI and guest binaries
+mise run build:all
 
 # Run tests
-go test ./...
+mise run test
+
+# Run all checks (fmt, vet, lint, test)
+mise run check
 
 # Format code
-go fmt ./...
+mise run fmt
 
-# Build kernel (requires kernel build tools)
-./scripts/build-kernel.sh
+# Build kernels (x86_64 + arm64)
+mise run kernel:build
 
-# Build rootfs (requires root and Alpine tools)
-sudo ./scripts/build-rootfs.sh
+# Publish kernels to GHCR
+mise run kernel:publish
 ```
 
 ## CLI Usage

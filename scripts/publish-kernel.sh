@@ -86,19 +86,23 @@ publish_platform() {
     local kernel_name=$(basename "$kernel_file")
 
     echo "Publishing $arch kernel as $tag..."
-    
+
     # Create tarball from kernel file (crane append expects a tarball)
     local tmpdir=$(mktemp -d)
     local tarball="$tmpdir/kernel.tar.gz"
     tar -czf "$tarball" -C "$(dirname "$kernel_file")" "$kernel_name"
-    
+
     # Create OCI image with kernel as single layer (using empty base)
     crane append \
         --oci-empty-base \
         --platform "$platform" \
         -f "$tarball" \
         -t "$tag"
-    
+
+    # Set platform in config (crane append with --oci-empty-base leaves config platform empty)
+    # This is required for crane index append to properly infer platform
+    crane mutate --set-platform "$platform" -t "$tag" "$tag"
+
     rm -rf "$tmpdir"
     echo "Published: $tag"
 }

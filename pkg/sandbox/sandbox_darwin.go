@@ -38,12 +38,15 @@ type Sandbox struct {
 type Options struct {
 	KernelPath    string
 	InitramfsPath string
-	RootfsPath    string
+	RootfsPath    string // Required: path to the rootfs image
 }
 
 func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, error) {
 	if opts == nil {
 		opts = &Options{}
+	}
+	if opts.RootfsPath == "" {
+		return nil, fmt.Errorf("RootfsPath is required")
 	}
 
 	id := "vm-" + uuid.New().String()[:8]
@@ -72,9 +75,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		initramfsPath = DefaultInitramfsPath()
 	}
 	rootfsPath := opts.RootfsPath
-	if rootfsPath == "" {
-		rootfsPath = DefaultRootfsPath(config.Image)
-	}
 
 	// Determine if we need network interception (calculated before VM creation)
 	needsInterception := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)

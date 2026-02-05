@@ -73,7 +73,6 @@ func (c *Config) GetWorkspace() string {
 
 func DefaultConfig() *Config {
 	return &Config{
-		Image: "standard",
 		Resources: &Resources{
 			CPUs:           1,
 			MemoryMB:       512,

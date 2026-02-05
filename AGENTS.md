@@ -92,28 +92,24 @@ mise run kernel:publish
 ## CLI Usage
 
 ```bash
-# Build rootfs from container image
+# Build rootfs from container image (pre-build for faster startup)
 matchlock build alpine:latest
 matchlock build python:3.12-alpine
 matchlock build ubuntu:22.04
 
-# Run with container image
+# Run with container image (--image is required)
 matchlock run --image alpine:latest cat /etc/os-release
 matchlock run --image python:3.12-alpine python3 --version
 
-# Run with pre-built image variants
-matchlock run python script.py
-matchlock run --image standard python script.py
-
 # Interactive mode (like docker -it)
-matchlock run -it python3
 matchlock run --image alpine:latest -it sh
+matchlock run --image python:3.12-alpine -it python3
 
 # With network allowlist
-matchlock run --allow-host "api.openai.com" python agent.py
+matchlock run --image python:3.12-alpine --allow-host "api.openai.com" python agent.py
 
 # HTTPS with automatic CA injection
-matchlock run --allow-host "httpbin.org" curl https://httpbin.org/get
+matchlock run --image alpine:latest --allow-host "httpbin.org" curl https://httpbin.org/get
 
 # With secrets (MITM proxy replaces placeholder with real value)
 export ANTHROPIC_API_KEY=sk-xxx
@@ -122,7 +118,7 @@ matchlock run --image python:3.12-alpine \
   python call_api.py
 
 # Inline secret value
-matchlock run --secret "API_KEY=sk-xxx@api.example.com" python script.py
+matchlock run --image python:3.12-alpine --secret "API_KEY=sk-xxx@api.example.com" python script.py
 
 # List sandboxes
 matchlock list
@@ -231,8 +227,7 @@ Firecracker exposes vsock via Unix domain sockets with two connection patterns:
 
 ## Environment Variables
 
-- `MATCHLOCK_KERNEL`: Path to kernel image
-- `MATCHLOCK_ROOTFS`: Path to rootfs image
+- `MATCHLOCK_KERNEL`: Path to kernel image (optional, auto-downloaded if not set)
 
 ## JSON-RPC Methods
 
@@ -321,19 +316,6 @@ Required kernel options for Firecracker v1.8+:
 - `CONFIG_FUSE_FS=y` - VFS support
 - `CONFIG_IP_PNP=y` - Required for kernel `ip=` boot parameter (network configuration)
 
-### Rootfs
-
-Requirements: root, apk (Alpine package manager)
-
-```bash
-IMAGE=standard OUTPUT_DIR=~/.cache/matchlock sudo ./scripts/build-rootfs.sh
-```
-
-Image variants:
-- `minimal`: Base Alpine only
-- `standard`: Python, Node.js, Git
-- `full`: Go, Rust, dev tools
-
 ## macOS Setup (Apple Silicon)
 
 ### Prerequisites
@@ -376,11 +358,9 @@ codesign --entitlements matchlock.entitlements -f -s - bin/matchlock
 
 The macOS backend requires:
 1. **ARM64 Linux kernel** - Automatically downloaded from GHCR on first run
-2. **ext4 rootfs** - Either built from container image (`--image` option) or custom rootfs
+2. **ext4 rootfs** - Built from container image via `--image` option
 
 Kernels are auto-downloaded to `~/.cache/matchlock/kernels/{version}/kernel-arm64`.
-
-**Option A: Use container images (recommended)**
 
 With e2fsprogs installed, use `--image` to automatically pull and build rootfs from any container image:
 
@@ -391,31 +371,14 @@ matchlock run --image python:3.12-alpine python3 --version
 matchlock run --image ubuntu:24.04 cat /etc/os-release
 ```
 
-**Option B: Build custom rootfs via Lima**
-
-For a pre-built rootfs without container image support:
-
-```bash
-limactl start --name=rootfs-builder template://alpine
-limactl shell rootfs-builder -- sudo ./scripts/create-rootfs-lima.sh
-limactl copy rootfs-builder:/tmp/rootfs.ext4 ~/.cache/matchlock/rootfs.ext4
-limactl delete rootfs-builder
-```
-
 ### Usage
 
 ```bash
-# Run with container image (recommended)
+# Run with container image (--image is required)
 matchlock run --image alpine:latest echo 'Hello from macOS VM!'
 
 # Interactive shell
 matchlock run --image alpine:latest -it sh
-
-# Run a command with pre-built rootfs
-matchlock run echo 'Hello from macOS VM!'
-
-# With explicit rootfs path
-MATCHLOCK_ROOTFS=~/.cache/matchlock/rootfs.ext4 matchlock run uname -a
 ```
 
 ### macOS-Specific Notes

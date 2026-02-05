@@ -9,7 +9,7 @@
 //	defer client.Close()
 //
 //	vmID, err := client.Create(sdk.CreateOptions{
-//	    Image:    "standard",
+//	    Image:    "alpine:latest",
 //	    CPUs:     1,
 //	    MemoryMB: 512,
 //	})
@@ -125,7 +125,7 @@ func (c *Client) Close() error {
 
 // CreateOptions holds options for creating a sandbox
 type CreateOptions struct {
-	// Image is the rootfs image variant (minimal, standard, full)
+	// Image is the container image reference (required, e.g., alpine:latest)
 	Image string
 	// CPUs is the number of vCPUs
 	CPUs int
@@ -166,7 +166,7 @@ type MountConfig struct {
 // Create creates and starts a new sandbox VM
 func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.Image == "" {
-		opts.Image = "standard"
+		return "", fmt.Errorf("Image is required (e.g., alpine:latest)")
 	}
 	if opts.CPUs == 0 {
 		opts.CPUs = 1

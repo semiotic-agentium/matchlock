@@ -146,6 +146,14 @@ func (h *Handler) handleCreate(ctx context.Context, req *Request) *Response {
 		}
 	}
 
+	if params.Image == "" {
+		return &Response{
+			JSONRPC: "2.0",
+			Error:   &Error{Code: ErrCodeInvalidParams, Message: "image is required (e.g., alpine:latest)"},
+			ID:      req.ID,
+		}
+	}
+
 	config := api.DefaultConfig().Merge(&params)
 
 	vm, err := h.factory(ctx, config)

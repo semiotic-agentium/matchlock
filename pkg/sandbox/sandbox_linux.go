@@ -42,7 +42,7 @@ type Sandbox struct {
 type Options struct {
 	// KernelPath overrides the default kernel path
 	KernelPath string
-	// RootfsPath overrides the default rootfs path
+	// RootfsPath is the path to the rootfs image (required)
 	RootfsPath string
 }
 
@@ -50,6 +50,9 @@ type Options struct {
 func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, error) {
 	if opts == nil {
 		opts = &Options{}
+	}
+	if opts.RootfsPath == "" {
+		return nil, fmt.Errorf("RootfsPath is required")
 	}
 
 	id := "vm-" + uuid.New().String()[:8]
@@ -75,9 +78,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		kernelPath = DefaultKernelPath()
 	}
 	rootfsPath := opts.RootfsPath
-	if rootfsPath == "" {
-		rootfsPath = DefaultRootfsPath(config.Image)
-	}
 
 	vmConfig := &vm.VMConfig{
 		ID:         id,

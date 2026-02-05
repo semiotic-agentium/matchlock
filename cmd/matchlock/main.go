@@ -84,7 +84,7 @@ Commands:
 
 Run Options:
   -it                    Interactive mode with TTY (like docker -it)
-  --image <name>         Image variant (minimal, standard, full) or container image (alpine:latest)
+  --image <image>        Container image (required, e.g., alpine:latest, python:3.12-alpine)
   --workspace <path>     Guest VFS mount point (default: /workspace)
   --allow-host <host>    Add host to allowlist (can be repeated, supports wildcards)
   --secret <spec>        Inject secret via MITM proxy (can be repeated, see below)
@@ -139,7 +139,7 @@ Examples:
 
 func cmdRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	imageFlag := fs.String("image", "standard", "Image variant or container image")
+	imageFlag := fs.String("image", "", "Container image (required)")
 	cpus := fs.Int("cpus", 1, "Number of CPUs")
 	memory := fs.Int("memory", 512, "Memory in MB")
 	timeout := fs.Int("timeout", 300, "Timeout in seconds")
@@ -153,6 +153,11 @@ func cmdRun(args []string) {
 	fs.Var(&secrets, "secret", "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2 to read from env)")
 
 	fs.Parse(args)
+
+	if *imageFlag == "" {
+		fmt.Fprintln(os.Stderr, "Error: --image is required (e.g., --image alpine:latest)")
+		os.Exit(1)
+	}
 
 	if fs.NArg() == 0 {
 		fmt.Fprintln(os.Stderr, "Error: command required")
@@ -171,30 +176,25 @@ func cmdRun(args []string) {
 		cancel()
 	}()
 
-	// Determine if image is a container image or variant
 	imageName := *imageFlag
-	var sandboxOpts *sandbox.Options
 
-	if isContainerImage(imageName) {
-		// Build rootfs from container image (or use cached)
-		builder := image.NewBuilder(&image.BuildOptions{
-			GuestAgentPath: sandbox.DefaultGuestAgentPath(),
-			GuestFusedPath: sandbox.DefaultGuestFusedPath(),
-		})
+	// Build rootfs from container image (or use cached)
+	builder := image.NewBuilder(&image.BuildOptions{
+		GuestAgentPath: sandbox.DefaultGuestAgentPath(),
+		GuestFusedPath: sandbox.DefaultGuestFusedPath(),
+	})
 
-		result, err := builder.Build(ctx, imageName)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Error building rootfs: %v\n", err)
-			os.Exit(1)
-		}
-		if result.Cached {
-			fmt.Printf("Using cached image %s\n", imageName)
-		} else {
-			fmt.Printf("Built rootfs from %s (%.1f MB)\n", imageName, float64(result.Size)/(1024*1024))
-		}
-		sandboxOpts = &sandbox.Options{RootfsPath: result.RootfsPath}
-		imageName = "container"
+	buildResult, err := builder.Build(ctx, imageName)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error building rootfs: %v\n", err)
+		os.Exit(1)
 	}
+	if buildResult.Cached {
+		fmt.Printf("Using cached image %s\n", imageName)
+	} else {
+		fmt.Printf("Built rootfs from %s (%.1f MB)\n", imageName, float64(buildResult.Size)/(1024*1024))
+	}
+	sandboxOpts := &sandbox.Options{RootfsPath: buildResult.RootfsPath}
 
 	// Parse volume mounts
 	vfsConfig := &api.VFSConfig{Workspace: *workspace}
@@ -531,7 +531,22 @@ func cmdRPC(args []string) {
 	}()
 
 	factory := func(ctx context.Context, config *api.Config) (rpc.VM, error) {
-		return sandbox.New(ctx, config, nil)
+		if config.Image == "" {
+			return nil, fmt.Errorf("image is required")
+		}
+
+		// Build rootfs from container image
+		builder := image.NewBuilder(&image.BuildOptions{
+			GuestAgentPath: sandbox.DefaultGuestAgentPath(),
+			GuestFusedPath: sandbox.DefaultGuestFusedPath(),
+		})
+
+		result, err := builder.Build(ctx, config.Image)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build rootfs: %w", err)
+		}
+
+		return sandbox.New(ctx, config, &sandbox.Options{RootfsPath: result.RootfsPath})
 	}
 
 	if err := rpc.RunRPC(ctx, factory); err != nil {
@@ -544,24 +559,6 @@ type stringSlice []string
 
 func (s *stringSlice) String() string     { return fmt.Sprintf("%v", *s) }
 func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
-
-func isContainerImage(name string) bool {
-	knownVariants := map[string]bool{
-		"minimal":  true,
-		"standard": true,
-		"full":     true,
-	}
-	if knownVariants[name] {
-		return false
-	}
-	// Container images have : (tag) or / (registry/namespace)
-	for _, ch := range name {
-		if ch == ':' || ch == '/' {
-			return true
-		}
-	}
-	return false
-}
 
 // parseSecret parses a secret string in format:
 //   - NAME=VALUE@host1,host2  (inline value)

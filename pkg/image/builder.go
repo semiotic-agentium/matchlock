@@ -177,7 +177,27 @@ hostname matchlock
 # Ensure network interface is up
 ip link set eth0 up 2>/dev/null || ifconfig eth0 up 2>/dev/null
 
+# Start FUSE daemon for VFS
 /opt/matchlock/guest-fused &
+
+# Get workspace path from kernel cmdline
+WORKSPACE=$(cat /proc/cmdline | tr ' ' '\n' | grep 'matchlock.workspace=' | cut -d= -f2)
+[ -z "$WORKSPACE" ] && WORKSPACE="/workspace"
+
+# Wait for VFS mount and inject CA cert if present (only exists when proxy is enabled)
+for i in $(seq 1 50); do
+    if [ -f "$WORKSPACE/.sandbox-ca.crt" ]; then
+        mkdir -p /etc/ssl/certs
+        cat "$WORKSPACE/.sandbox-ca.crt" >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null
+        break
+    fi
+    # Check if workspace is mounted but CA doesn't exist (no proxy)
+    if mount | grep -q "$WORKSPACE"; then
+        break
+    fi
+    sleep 0.1
+done
+
 exec /opt/matchlock/guest-agent
 `
 	initPath := filepath.Join(rootDir, "sbin", "matchlock-init")

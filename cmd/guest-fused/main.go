@@ -679,13 +679,14 @@ func main() {
 	// Create root node - basePath must match the VFS mount configuration on host
 	root := &VFSRoot{client: client, basePath: mountpoint}
 
-	// Mount with go-fuse
+	// Mount with go-fuse using DirectMountStrict to avoid fusermount dependency
 	opts := &fs.Options{
 		MountOptions: fuse.MountOptions{
-			AllowOther: true,
-			FsName:     "matchlock",
-			Name:       "fuse.matchlock",
-			Debug:      false,
+			AllowOther:        true,
+			FsName:            "matchlock",
+			Name:              "fuse.matchlock",
+			Debug:             false,
+			DirectMountStrict: true,
 		},
 		AttrTimeout:  &[]time.Duration{time.Second}[0],
 		EntryTimeout: &[]time.Duration{time.Second}[0],

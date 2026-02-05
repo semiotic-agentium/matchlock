@@ -90,6 +90,9 @@ func NewClient(cfg Config) (*Client, error) {
 		return nil, fmt.Errorf("failed to start matchlock: %w", err)
 	}
 
+	// Drain stderr in background to prevent blocking
+	go io.Copy(io.Discard, stderr)
+
 	return &Client{
 		cmd:    cmd,
 		stdin:  stdin,

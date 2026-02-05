@@ -1,6 +1,11 @@
 # Examples
 
+Run from the project root directory:
+
 ```bash
+cd matchlock
+
+# Basic example
 go run examples/go/main.go
 python3 examples/python/main.py
 

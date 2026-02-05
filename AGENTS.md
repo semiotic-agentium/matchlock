@@ -209,6 +209,7 @@ Required kernel options for Firecracker v1.8+:
 - `CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y` - Parse `virtio_mmio.device=` from cmdline
 - `CONFIG_VSOCKETS=y` and `CONFIG_VIRTIO_VSOCKETS=y` - Host-guest communication
 - `CONFIG_FUSE_FS=y` - VFS support
+- `CONFIG_IP_PNP=y` - Required for kernel `ip=` boot parameter (network configuration)
 
 ### Rootfs
 

@@ -115,18 +115,16 @@ cat > "$MOUNT_DIR/etc/network/interfaces" << 'EOF'
 auto lo
 iface lo inet loopback
 
+# eth0 is configured by kernel ip= boot parameter
+# Use manual to prevent OpenRC from overriding it
 auto eth0
-iface eth0 inet static
-    address 192.168.100.2
-    netmask 255.255.255.0
-    gateway 192.168.100.1
+iface eth0 inet manual
 EOF
 
 echo "matchlock" > "$MOUNT_DIR/etc/hostname"
 
 cat > "$MOUNT_DIR/etc/hosts" << 'EOF'
-127.0.0.1   localhost
-192.168.100.2   matchlock
+127.0.0.1   localhost localhost.localdomain
 EOF
 
 echo "nameserver 8.8.8.8" > "$MOUNT_DIR/etc/resolv.conf"
@@ -185,7 +183,8 @@ chroot "$MOUNT_DIR" rc-update add modules boot || true
 chroot "$MOUNT_DIR" rc-update add sysctl boot || true
 chroot "$MOUNT_DIR" rc-update add hostname boot || true
 chroot "$MOUNT_DIR" rc-update add bootmisc boot || true
-chroot "$MOUNT_DIR" rc-update add networking default
+# Note: networking service is NOT enabled - kernel ip= boot parameter configures eth0
+# chroot "$MOUNT_DIR" rc-update add networking default
 chroot "$MOUNT_DIR" rc-update add guest-agent default
 chroot "$MOUNT_DIR" rc-update add guest-fused default
 chroot "$MOUNT_DIR" rc-update add mount-ro shutdown || true

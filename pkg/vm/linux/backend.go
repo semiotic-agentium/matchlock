@@ -248,7 +248,8 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		}
 		// Use acpi=off to avoid memory region conflicts with virtio-mmio devices
 		// Firecracker uses virtio-mmio transport, not virtio-pci
-		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off ip=%s::%s:255.255.255.0::eth0:off", guestIP, gatewayIP)
+		// Format: ip=<client-ip>:<server-ip>:<gw-ip>:<netmask>:<hostname>:<device>:<autoconf>:<dns0>:<dns1>
+		kernelArgs = fmt.Sprintf("console=ttyS0 reboot=k panic=1 acpi=off ip=%s::%s:255.255.255.0::eth0:off:8.8.8.8:8.8.4.4", guestIP, gatewayIP)
 	}
 
 	config := fmt.Sprintf(`{

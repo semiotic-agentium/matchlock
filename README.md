@@ -5,6 +5,7 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 ## Features
 
 - **Secure Execution**: Code runs in isolated Firecracker micro-VMs
+- **Container Images**: Run any Docker/OCI image (Alpine, Ubuntu, Python, etc.)
 - **Network MITM**: All HTTP/HTTPS traffic intercepted via gVisor userspace TCP/IP
 - **Secret Protection**: Secrets never enter the VM, only placeholders
 - **Host Allowlisting**: Control which hosts code can access
@@ -17,7 +18,7 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 
 - Linux x86_64 with KVM support
 - Go 1.21+
-- Root access (for TAP devices)
+- Root access (for TAP devices and image building)
 
 ### Install
 
@@ -26,40 +27,59 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 git clone https://github.com/jingkaihe/matchlock.git
 cd matchlock
 
-# Full setup (installs Firecracker, builds kernel/rootfs, installs CLI)
-make setup
+# Build binaries
+make build-all
 
-# Or step by step:
-make install-firecracker    # Install Firecracker
-make images                 # Build kernel + rootfs (~30 min)
-make install                # Install sandbox CLI
-```
+# Install Firecracker
+make install-firecracker
 
-### Quick Test
-
-```bash
-# Download pre-built images for testing (faster than building)
-./scripts/download-kernel.sh
-./scripts/download-rootfs.sh
-
-# Test Firecracker directly
-firecracker --config-file /tmp/fc-config.json
+# Build kernel (one-time, ~10 min)
+make kernel
 ```
 
 ### Usage
 
 ```bash
-# Run a command
-sudo sandbox run python -c "print('Hello from sandbox')"
+# Run with any container image (auto-builds rootfs on first use)
+sudo matchlock run --image alpine:latest cat /etc/os-release
+sudo matchlock run --image python:3.12-alpine python3 --version
+sudo matchlock run --image ubuntu:22.04 uname -a
+
+# Interactive shell
+sudo matchlock run --image alpine:latest -it sh
+
+# Pre-build an image for faster subsequent runs
+sudo matchlock build python:3.12-alpine
 
 # With network allowlist
-sudo sandbox run --allow-host "api.openai.com" python script.py
+sudo matchlock run --image python:3.12-alpine --allow-host "api.openai.com" python script.py
 
 # List running sandboxes
-sandbox list
+matchlock list
 
 # Kill a sandbox
-sandbox kill vm-abc123
+matchlock kill vm-abc123
+```
+
+### How Container Images Work
+
+When you run `matchlock run --image <container-image>`:
+
+1. **First run**: Pulls the image, extracts layers, injects matchlock components, creates ext4 rootfs
+2. **Subsequent runs**: Uses cached rootfs (instant startup)
+
+Images are cached in `~/.cache/matchlock/images/` by digest.
+
+```bash
+# First run - builds rootfs (~30s for alpine, longer for larger images)
+$ sudo matchlock run --image alpine:latest cat /etc/alpine-release
+Built rootfs from alpine:latest (527.0 MB)
+3.21.0
+
+# Second run - uses cache (instant)
+$ sudo matchlock run --image alpine:latest cat /etc/alpine-release
+Using cached image alpine:latest
+3.21.0
 ```
 
 ## Architecture
@@ -68,7 +88,7 @@ sandbox kill vm-abc123
 ┌─────────────────────────────────────────────────┐
 │                    Host                          │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────┐  │
-│  │  Sandbox    │  │  Policy     │  │   VFS   │  │
+│  │  Matchlock  │  │  Policy     │  │   VFS   │  │
 │  │    CLI      │──│  Engine     │  │ Server  │  │
 │  └─────────────┘  └─────────────┘  └─────────┘  │
 │         │              │                 │       │
@@ -84,15 +104,13 @@ sandbox kill vm-abc123
 │  │  ┌─────────────┐  ┌─────────────────────┐  │ │
 │  │  │ Guest Agent │  │ /workspace (FUSE)   │  │ │
 │  │  └─────────────┘  └─────────────────────┘  │ │
-│  │         Alpine Linux + Python/Node.js      │ │
+│  │       Any OCI Image (Alpine, Ubuntu, etc)  │ │
 │  └────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────┘
 ```
 
 ## Documentation
 
-- [Setup Guide](docs/SETUP.md) - Complete installation instructions
-- [Architecture](docs/ARCHITECTURE.md) - Technical design details
 - [AGENTS.md](AGENTS.md) - Developer reference
 
 ## Build Commands
@@ -101,7 +119,7 @@ sandbox kill vm-abc123
 make build          # Build CLI
 make build-all      # Build CLI + guest binaries
 make test           # Run tests
-make images         # Build kernel + rootfs
+make kernel         # Build kernel
 make help           # Show all targets
 ```
 
@@ -111,7 +129,6 @@ Environment variables:
 
 ```bash
 export MATCHLOCK_KERNEL=~/.cache/matchlock/kernel
-export MATCHLOCK_ROOTFS=~/.cache/matchlock/rootfs-standard.ext4
 ```
 
 ## Project Structure
@@ -119,11 +136,13 @@ export MATCHLOCK_ROOTFS=~/.cache/matchlock/rootfs-standard.ext4
 ```
 matchlock/
 ├── cmd/
-│   ├── sandbox/          # CLI
+│   ├── matchlock/        # CLI
 │   ├── guest-agent/      # In-VM command executor
 │   └── guest-fused/      # In-VM FUSE daemon
 ├── pkg/
 │   ├── api/              # Core types
+│   ├── image/            # OCI image builder
+│   ├── sandbox/          # Sandbox management
 │   ├── vm/linux/         # Firecracker backend
 │   ├── net/              # gVisor network + TLS MITM
 │   ├── policy/           # Security policies
@@ -132,7 +151,7 @@ matchlock/
 │   ├── state/            # VM state management
 │   └── rpc/              # JSON-RPC handler
 ├── scripts/              # Build scripts
-└── docs/                 # Documentation
+└── examples/             # SDK examples
 ```
 
 ## Requirements

@@ -5,8 +5,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
-	"path/filepath"
 
 	"github.com/google/uuid"
 	"github.com/jingkaihe/matchlock/pkg/api"

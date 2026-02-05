@@ -14,6 +14,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/image"
 	"github.com/jingkaihe/matchlock/pkg/rpc"
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
 	"github.com/jingkaihe/matchlock/pkg/state"
@@ -29,6 +30,8 @@ func main() {
 	switch os.Args[1] {
 	case "run":
 		cmdRun(os.Args[2:])
+	case "build":
+		cmdBuild(os.Args[2:])
 	case "list":
 		cmdList(os.Args[2:])
 	case "get":
@@ -55,6 +58,7 @@ func printUsage() {
 
 Commands:
   run <command>     Run a command in a new sandbox
+  build <image>     Build rootfs from container image (e.g., alpine:latest)
   list              List all sandboxes
   get <id>          Get details of a sandbox
   kill <id>         Kill a running sandbox
@@ -62,15 +66,19 @@ Commands:
   prune             Remove all stopped sandboxes
   --rpc             Run in RPC mode (for programmatic access)
 
-Options:
+Run Options:
   -it                    Interactive mode with TTY (like docker -it)
-  --image <name>         Image variant (minimal, standard, full)
+  --image <name>         Image variant (minimal, standard, full) or container image (alpine:latest)
   --workspace <path>     Guest VFS mount point (default: /workspace)
   --allow-host <host>    Add host to allowlist (can be repeated, supports wildcards)
   -v <host:guest[:ro]>   Mount host directory into sandbox (can be repeated)
   --cpus <n>             Number of CPUs
   --memory <mb>          Memory in MB
   --timeout <s>          Timeout in seconds
+
+Build Options:
+  --guest-agent <path>   Path to guest-agent binary
+  --guest-fused <path>   Path to guest-fused binary
 
 Volume Mounts (-v):
   Guest paths are relative to workspace (or use full workspace paths):
@@ -84,6 +92,9 @@ Wildcard Patterns for --allow-host:
   api-*.example.com      Allow pattern match (api-v1.example.com, api-prod.example.com)
 
 Examples:
+  matchlock build alpine:latest                          # Build from Alpine
+  matchlock build ubuntu:22.04                           # Build from Ubuntu
+  matchlock run --image alpine:latest -it sh             # Run with container image
   matchlock run python script.py
   matchlock run -it python3                              # Interactive Python
   matchlock run -it sh                                   # Interactive shell
@@ -96,7 +107,7 @@ Examples:
 
 func cmdRun(args []string) {
 	fs := flag.NewFlagSet("run", flag.ExitOnError)
-	image := fs.String("image", "standard", "Image variant")
+	imageFlag := fs.String("image", "standard", "Image variant or container image")
 	cpus := fs.Int("cpus", 1, "Number of CPUs")
 	memory := fs.Int("memory", 512, "Memory in MB")
 	timeout := fs.Int("timeout", 300, "Timeout in seconds")
@@ -131,6 +142,31 @@ func cmdRun(args []string) {
 		cancel()
 	}()
 
+	// Determine if image is a container image or variant
+	imageName := *imageFlag
+	var sandboxOpts *sandbox.Options
+
+	if isContainerImage(imageName) {
+		// Build rootfs from container image (or use cached)
+		builder := image.NewBuilder(&image.BuildOptions{
+			GuestAgentPath: sandbox.DefaultGuestAgentPath(),
+			GuestFusedPath: sandbox.DefaultGuestFusedPath(),
+		})
+
+		result, err := builder.Build(ctx, imageName)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error building rootfs: %v\n", err)
+			os.Exit(1)
+		}
+		if result.Cached {
+			fmt.Printf("Using cached image %s\n", imageName)
+		} else {
+			fmt.Printf("Built rootfs from %s (%.1f MB)\n", imageName, float64(result.Size)/(1024*1024))
+		}
+		sandboxOpts = &sandbox.Options{RootfsPath: result.RootfsPath}
+		imageName = "container"
+	}
+
 	// Parse volume mounts
 	vfsConfig := &api.VFSConfig{Workspace: *workspace}
 	if len(volumes) > 0 {
@@ -151,7 +187,7 @@ func cmdRun(args []string) {
 	}
 
 	config := &api.Config{
-		Image: *image,
+		Image: imageName,
 		Resources: &api.Resources{
 			CPUs:           *cpus,
 			MemoryMB:       *memory,
@@ -164,7 +200,7 @@ func cmdRun(args []string) {
 		VFS: vfsConfig,
 	}
 
-	sb, err := sandbox.New(ctx, config, nil)
+	sb, err := sandbox.New(ctx, config, sandboxOpts)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Error creating sandbox: %v\n", err)
 		os.Exit(1)
@@ -194,6 +230,59 @@ func cmdRun(args []string) {
 
 	sb.Close()
 	os.Exit(result.ExitCode)
+}
+
+func cmdBuild(args []string) {
+	fs := flag.NewFlagSet("build", flag.ExitOnError)
+	guestAgent := fs.String("guest-agent", "", "Path to guest-agent binary")
+	guestFused := fs.String("guest-fused", "", "Path to guest-fused binary")
+	fs.Parse(args)
+
+	if fs.NArg() == 0 {
+		fmt.Fprintln(os.Stderr, "Error: container image reference required (e.g., alpine:latest)")
+		os.Exit(1)
+	}
+
+	imageRef := fs.Arg(0)
+
+	agentPath := *guestAgent
+	if agentPath == "" {
+		agentPath = sandbox.DefaultGuestAgentPath()
+	}
+	fusedPath := *guestFused
+	if fusedPath == "" {
+		fusedPath = sandbox.DefaultGuestFusedPath()
+	}
+
+	if _, err := os.Stat(agentPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: guest-agent not found at %s\n", agentPath)
+		fmt.Fprintln(os.Stderr, "Build with: CGO_ENABLED=0 go build -o bin/guest-agent ./cmd/guest-agent")
+		os.Exit(1)
+	}
+	if _, err := os.Stat(fusedPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Error: guest-fused not found at %s\n", fusedPath)
+		fmt.Fprintln(os.Stderr, "Build with: CGO_ENABLED=0 go build -o bin/guest-fused ./cmd/guest-fused")
+		os.Exit(1)
+	}
+
+	builder := image.NewBuilder(&image.BuildOptions{
+		GuestAgentPath: agentPath,
+		GuestFusedPath: fusedPath,
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	fmt.Printf("Building rootfs from %s...\n", imageRef)
+	result, err := builder.Build(ctx, imageRef)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
+	}
+
+	fmt.Printf("Built: %s\n", result.RootfsPath)
+	fmt.Printf("Digest: %s\n", result.Digest)
+	fmt.Printf("Size: %.1f MB\n", float64(result.Size)/(1024*1024))
 }
 
 func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command string) int {
@@ -409,5 +498,23 @@ func cmdRPC(args []string) {
 
 type stringSlice []string
 
-func (s *stringSlice) String() string  { return fmt.Sprintf("%v", *s) }
+func (s *stringSlice) String() string     { return fmt.Sprintf("%v", *s) }
 func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
+
+func isContainerImage(name string) bool {
+	knownVariants := map[string]bool{
+		"minimal":  true,
+		"standard": true,
+		"full":     true,
+	}
+	if knownVariants[name] {
+		return false
+	}
+	// Container images have : (tag) or / (registry/namespace)
+	for _, ch := range name {
+		if ch == ':' || ch == '/' {
+			return true
+		}
+	}
+	return false
+}

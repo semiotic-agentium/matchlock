@@ -1,4 +1,4 @@
-// Matchlock Go SDK Example - Secret MITM Demo
+// Matchlock Go SDK Example - Container Image + Secret MITM Demo
 package main
 
 import (
@@ -13,7 +13,6 @@ import (
 func main() {
 	cfg := sdk.DefaultConfig()
 	if os.Getenv("MATCHLOCK_BIN") == "" {
-		// Use ./bin/matchlock relative to current directory
 		cfg.BinaryPath = "./bin/matchlock"
 	}
 
@@ -24,8 +23,9 @@ func main() {
 	}
 	defer client.Close()
 
-	opts := sdk.CreateOptions{Image: "standard"}
-	
+	// Use python:3.12-alpine container image (auto-builds on first use)
+	opts := sdk.CreateOptions{Image: "python:3.12-alpine"}
+
 	// If ANTHROPIC_API_KEY is set, configure secret MITM
 	apiKey := os.Getenv("ANTHROPIC_API_KEY")
 	if apiKey != "" {
@@ -37,24 +37,28 @@ func main() {
 		fmt.Println("Secret MITM enabled for api.anthropic.com")
 	}
 
+	fmt.Println("Creating VM with python:3.12-alpine...")
 	vmID, err := client.Create(opts)
 	if err != nil {
-		// Check if binary exists
 		if _, statErr := os.Stat(cfg.BinaryPath); statErr != nil {
 			absPath, _ := filepath.Abs(cfg.BinaryPath)
 			fmt.Fprintf(os.Stderr, "Binary not found at: %s\n", absPath)
-			fmt.Fprintf(os.Stderr, "Run from project root: cd matchlock && go run examples/go/main.go\n")
+			fmt.Fprintf(os.Stderr, "Run: make build-all\n")
 		}
 		fmt.Fprintf(os.Stderr, "Failed to create VM: %v\n", err)
 		os.Exit(1)
 	}
 	fmt.Printf("Created VM: %s\n\n", vmID)
 
+	// Test Python version
+	result, _ := client.Exec("python3 --version")
+	fmt.Printf("Python: %s", result.Stdout)
+
 	// Test basic connectivity
-	result, _ := client.Exec("ping -c 1 8.8.8.8 2>&1 | tail -2")
+	result, _ = client.Exec("ping -c 1 8.8.8.8 2>&1 | tail -2")
 	fmt.Printf("Network: %s", result.Stdout)
 
-	// If API key configured, show placeholder and test API
+	// If API key configured, test Anthropic API
 	if apiKey != "" {
 		result, _ = client.Exec("echo ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY")
 		fmt.Printf("\n%s", result.Stdout)
@@ -66,7 +70,7 @@ func main() {
 			-H "x-api-key: $ANTHROPIC_API_KEY" \
 			-H "anthropic-version: 2023-06-01" \
 			-d '{"model":"claude-3-haiku-20240307","max_tokens":50,"messages":[{"role":"user","content":"Say hello in exactly 3 words"}]}'`
-		
+
 		result, err = client.Exec(curlCmd)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "API call failed: %v\n", err)

@@ -20,14 +20,12 @@ all: build
 # =============================================================================
 
 .PHONY: build
-build: $(MATCHLOCK_BIN)
+build:
+	@mkdir -p bin
+	$(GO) build -o $(MATCHLOCK_BIN) ./cmd/matchlock
 
 .PHONY: build-all
-build-all: $(MATCHLOCK_BIN) $(GUEST_AGENT_BIN) $(GUEST_FUSED_BIN)
-
-$(MATCHLOCK_BIN): $(shell find . -name '*.go' -not -path './cmd/guest-*')
-	@mkdir -p bin
-	$(GO) build -o $@ ./cmd/matchlock
+build-all: build guest-binaries
 
 $(GUEST_AGENT_BIN): cmd/guest-agent/main.go
 	@mkdir -p bin

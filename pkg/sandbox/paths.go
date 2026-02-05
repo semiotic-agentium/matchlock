@@ -61,3 +61,43 @@ func DefaultRootfsPath(image string) string {
 	}
 	return filepath.Join(home, ".cache/matchlock", filename)
 }
+
+// DefaultGuestAgentPath returns the default path to guest-agent binary.
+func DefaultGuestAgentPath() string {
+	return findGuestBinary("guest-agent", "MATCHLOCK_GUEST_AGENT")
+}
+
+// DefaultGuestFusedPath returns the default path to guest-fused binary.
+func DefaultGuestFusedPath() string {
+	return findGuestBinary("guest-fused", "MATCHLOCK_GUEST_FUSED")
+}
+
+func findGuestBinary(name, envVar string) string {
+	home, _ := os.UserHomeDir()
+	sudoHome := ""
+	if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" && os.Getuid() == 0 {
+		sudoHome = filepath.Join("/home", sudoUser)
+	}
+
+	// Get executable directory for relative paths
+	execPath, _ := os.Executable()
+	execDir := filepath.Dir(execPath)
+
+	paths := []string{
+		os.Getenv(envVar),
+		filepath.Join(execDir, name),
+		filepath.Join(home, ".cache/matchlock", name),
+	}
+	if sudoHome != "" {
+		paths = append(paths, filepath.Join(sudoHome, ".cache/matchlock", name))
+	}
+
+	for _, p := range paths {
+		if p != "" {
+			if _, err := os.Stat(p); err == nil {
+				return p
+			}
+		}
+	}
+	return filepath.Join(execDir, name)
+}

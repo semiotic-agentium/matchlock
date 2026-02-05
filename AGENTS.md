@@ -20,6 +20,8 @@ matchlock/
 │   └── guest-fused/      # In-VM FUSE daemon for VFS
 ├── pkg/
 │   ├── api/              # Core types (Config, VM, Events, Hooks)
+│   ├── image/            # OCI/Docker image builder
+│   ├── sandbox/          # Core sandbox management
 │   ├── vm/               # VM backend interface
 │   │   └── linux/        # Linux/Firecracker implementation
 │   ├── net/              # Network stack (TAP, HTTP/TLS MITM, CA injection)
@@ -61,12 +63,22 @@ sudo ./scripts/build-rootfs.sh
 ## CLI Usage
 
 ```bash
-# Run a command in sandbox
+# Build rootfs from container image
+matchlock build alpine:latest
+matchlock build python:3.12-alpine
+matchlock build ubuntu:22.04
+
+# Run with container image
+matchlock run --image alpine:latest cat /etc/os-release
+matchlock run --image python:3.12-alpine python3 --version
+
+# Run with pre-built image variants
 matchlock run python script.py
+matchlock run --image standard python script.py
 
 # Interactive mode (like docker -it)
 matchlock run -it python3
-matchlock run -it sh
+matchlock run --image alpine:latest -it sh
 
 # With network allowlist
 matchlock run --allow-host "api.openai.com" python agent.py
@@ -102,6 +114,14 @@ matchlock --rpc
 - Uses go-fuse library for POSIX-compliant FUSE implementation
 - Reads workspace path from kernel cmdline (`matchlock.workspace=`)
 - Connects to VFS server on vsock port 5001
+
+### Image Builder (`pkg/image`)
+- Pulls OCI/Docker images from any registry (Docker Hub, GHCR, etc.)
+- Extracts image layers and converts to ext4 rootfs
+- Injects matchlock guest components (guest-agent, guest-fused)
+- Creates minimal init script that runs as PID 1
+- Caches built images by digest in `~/.cache/matchlock/images/`
+- Supports any Linux container image (Alpine, Ubuntu, Debian, etc.)
 
 ### Policy Engine (`pkg/policy`)
 - Host allowlisting with glob patterns

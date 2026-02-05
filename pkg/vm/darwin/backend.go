@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	"github.com/Code-Hex/vz/v3"
 	"github.com/jingkaihe/matchlock/pkg/vm"
@@ -132,19 +133,16 @@ func (b *DarwinBackend) buildKernelArgs(config *vm.VMConfig) string {
 	if guestIP == "" {
 		guestIP = "192.168.100.2"
 	}
-	gatewayIP := config.GatewayIP
-	if gatewayIP == "" {
-		gatewayIP = "192.168.100.1"
-	}
 	workspace := config.Workspace
 	if workspace == "" {
 		workspace = "/workspace"
 	}
 
 	// Root device is /dev/vda (first virtio block device)
+	// Use DHCP for NAT mode - Apple's Virtualization.framework provides DHCP server
 	return fmt.Sprintf(
-		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=%s::%s:255.255.255.0::eth0:off:8.8.8.8:8.8.4.4 matchlock.workspace=%s",
-		guestIP, gatewayIP, workspace,
+		"console=hvc0 root=/dev/vda rw init=/init reboot=k panic=1 ip=dhcp matchlock.workspace=%s",
+		workspace,
 	)
 }
 
@@ -192,21 +190,24 @@ func (b *DarwinBackend) configureNetwork(vzConfig *vz.VirtualMachineConfiguratio
 }
 
 func (b *DarwinBackend) configureConsole(vzConfig *vz.VirtualMachineConfiguration, config *vm.VMConfig) error {
-	// Silent console - kernel output goes to /dev/null
-	nullRead, err := os.Open("/dev/null")
+	// Debug console - kernel output goes to file
+	home, _ := os.UserHomeDir()
+	logPath := filepath.Join(home, ".cache", "matchlock", "console.log")
+	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
 	if err != nil {
-		return fmt.Errorf("failed to open /dev/null for reading: %w", err)
-	}
-	nullWrite, err := os.OpenFile("/dev/null", os.O_WRONLY, 0)
-	if err != nil {
-		nullRead.Close()
-		return fmt.Errorf("failed to open /dev/null for writing: %w", err)
+		return fmt.Errorf("failed to create console log: %w", err)
 	}
 
-	serialAttachment, err := vz.NewFileHandleSerialPortAttachment(nullRead, nullWrite)
+	nullRead, err := os.Open("/dev/null")
+	if err != nil {
+		logFile.Close()
+		return fmt.Errorf("failed to open /dev/null for reading: %w", err)
+	}
+
+	serialAttachment, err := vz.NewFileHandleSerialPortAttachment(nullRead, logFile)
 	if err != nil {
 		nullRead.Close()
-		nullWrite.Close()
+		logFile.Close()
 		return fmt.Errorf("failed to create serial attachment: %w", err)
 	}
 

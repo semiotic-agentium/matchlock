@@ -54,7 +54,14 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 		return nil, fmt.Errorf("parse image reference: %w", err)
 	}
 
-	img, err := remote.Image(ref, remote.WithAuthFromKeychain(authn.DefaultKeychain), remote.WithContext(ctx))
+	// Get platform-specific options (darwin needs explicit arm64)
+	remoteOpts := []remote.Option{
+		remote.WithAuthFromKeychain(authn.DefaultKeychain),
+		remote.WithContext(ctx),
+	}
+	remoteOpts = append(remoteOpts, b.platformOptions()...)
+
+	img, err := remote.Image(ref, remoteOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("pull image: %w", err)
 	}
@@ -132,6 +139,7 @@ func (b *Builder) injectMatchlockComponents(rootDir string) error {
 		filepath.Join(rootDir, "proc"),
 		filepath.Join(rootDir, "sys"),
 		filepath.Join(rootDir, "dev"),
+		filepath.Join(rootDir, "workspace"),
 	}
 	for _, dir := range dirs {
 		if err := os.MkdirAll(dir, 0755); err != nil {
@@ -162,20 +170,35 @@ func (b *Builder) injectMatchlockComponents(rootDir string) error {
 # Matchlock minimal init - runs as PID 1
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
-mount -t proc proc /proc
-mount -t sysfs sys /sys
+# Remount root read-write (may be mounted ro by initramfs)
+mount -o remount,rw / 2>/dev/null || true
+
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sys /sys 2>/dev/null || true
 mount -t devtmpfs dev /dev 2>/dev/null || true
 
 mkdir -p /dev/pts /dev/shm
-mount -t devpts devpts /dev/pts
-mount -t tmpfs tmpfs /dev/shm
-mount -t tmpfs tmpfs /run
-mount -t tmpfs tmpfs /tmp
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
+mount -t tmpfs tmpfs /run 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 
 hostname matchlock
 
-# Ensure network interface is up
+# Network setup - bring up interface and get IP via DHCP
 ip link set eth0 up 2>/dev/null || ifconfig eth0 up 2>/dev/null
+
+# Try DHCP if kernel didn't configure IP (NAT mode)
+if ! ip addr show eth0 2>/dev/null | grep -q "inet "; then
+    # Alpine/busybox udhcpc
+    if command -v udhcpc >/dev/null 2>&1; then
+        udhcpc -i eth0 -n -q 2>/dev/null &
+    # Debian/Ubuntu dhclient
+    elif command -v dhclient >/dev/null 2>&1; then
+        dhclient eth0 2>/dev/null &
+    fi
+    sleep 2
+fi
 
 # Start FUSE daemon for VFS
 /opt/matchlock/guest-fused &
@@ -205,71 +228,19 @@ exec /opt/matchlock/guest-agent
 		return fmt.Errorf("write init script: %w", err)
 	}
 
+	// Create /init as the actual init script (not a symlink)
+	// This ensures it works with switch_root and various init systems
+	rootInit := filepath.Join(rootDir, "init")
+	os.Remove(rootInit) // Remove if exists (Alpine images may have their own)
+	if err := os.WriteFile(rootInit, []byte(initScript), 0755); err != nil {
+		return fmt.Errorf("write /init: %w", err)
+	}
+
+	// Also replace /sbin/init for compatibility
 	originalInit := filepath.Join(rootDir, "sbin", "init")
-	if err := os.Remove(originalInit); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("remove existing init: %w", err)
-	}
-	if err := os.Symlink("/sbin/matchlock-init", originalInit); err != nil {
-		return fmt.Errorf("symlink init: %w", err)
-	}
-
-	return nil
-}
-
-func (b *Builder) createExt4(sourceDir, destPath string) error {
-	var totalSize int64
-	filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
-		if err == nil {
-			totalSize += info.Size()
-		}
-		return nil
-	})
-
-	sizeMB := (totalSize / (1024 * 1024)) + 512
-	if sizeMB < 256 {
-		sizeMB = 256
-	}
-
-	tmpPath := destPath + ".tmp"
-
-	cmd := exec.Command("dd", "if=/dev/zero", "of="+tmpPath, "bs=1M", fmt.Sprintf("count=%d", sizeMB), "conv=sparse")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("create sparse file: %w: %s", err, out)
-	}
-
-	cmd = exec.Command("mkfs.ext4", "-F", "-q", tmpPath)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("mkfs.ext4: %w: %s", err, out)
-	}
-
-	mountDir, err := os.MkdirTemp("", "matchlock-mount-*")
-	if err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("create mount dir: %w", err)
-	}
-	defer os.RemoveAll(mountDir)
-
-	cmd = exec.Command("mount", "-o", "loop", tmpPath, mountDir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("mount: %w: %s", err, out)
-	}
-	defer exec.Command("umount", mountDir).Run()
-
-	cmd = exec.Command("cp", "-a", sourceDir+"/.", mountDir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("copy files: %w: %s", err, out)
-	}
-
-	cmd = exec.Command("umount", mountDir)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("umount: %w: %s", err, out)
-	}
-
-	if err := os.Rename(tmpPath, destPath); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("rename: %w", err)
+	os.Remove(originalInit)
+	if err := os.WriteFile(originalInit, []byte(initScript), 0755); err != nil {
+		return fmt.Errorf("write /sbin/init: %w", err)
 	}
 
 	return nil

@@ -268,6 +268,13 @@ Image variants:
 - macOS 11+ (Big Sur or later) on Apple Silicon
 - Go 1.25+ with CGO enabled
 - Code signing with virtualization entitlement
+- e2fsprogs (for `--image` option to build rootfs from container images)
+
+```bash
+# Install e2fsprogs for ext4 filesystem creation
+brew install e2fsprogs
+brew link e2fsprogs  # Makes mke2fs and debugfs available in PATH
+```
 
 ### Build & Sign CLI
 
@@ -297,13 +304,29 @@ codesign --entitlements matchlock.entitlements -f -s - bin/matchlock
 
 The macOS backend requires:
 1. **ARM64 Linux kernel** (`~/.cache/matchlock/kernel-arm64`) - Built with virtio drivers as built-in (not modules)
-2. **ext4 rootfs** (`~/.cache/matchlock/rootfs.ext4`) - With guest-agent and guest-fused injected
+2. **ext4 rootfs** - Either built from container image (`--image` option) or custom rootfs
 
 ```bash
 # Build ARM64 kernel (cross-compile on Linux or use pre-built)
 ./scripts/build-kernel.sh  # Outputs to ~/.cache/matchlock/kernel-arm64
+```
 
-# Build rootfs via Lima (since macOS can't create ext4 directly)
+**Option A: Use container images (recommended)**
+
+With e2fsprogs installed, use `--image` to automatically pull and build rootfs from any container image:
+
+```bash
+# Run with container image - automatically pulls linux/arm64 variant
+matchlock run --image alpine:latest echo hello
+matchlock run --image python:3.12-alpine python3 --version
+matchlock run --image ubuntu:24.04 cat /etc/os-release
+```
+
+**Option B: Build custom rootfs via Lima**
+
+For a pre-built rootfs without container image support:
+
+```bash
 limactl start --name=rootfs-builder template://alpine
 limactl shell rootfs-builder -- sudo ./scripts/create-rootfs-lima.sh
 limactl copy rootfs-builder:/tmp/rootfs.ext4 ~/.cache/matchlock/rootfs.ext4
@@ -313,21 +336,24 @@ limactl delete rootfs-builder
 ### Usage
 
 ```bash
-# Run a command in the sandbox
+# Run with container image (recommended)
+matchlock run --image alpine:latest echo 'Hello from macOS VM!'
+
+# Interactive shell
+matchlock run --image alpine:latest -it sh
+
+# Run a command with pre-built rootfs
 matchlock run echo 'Hello from macOS VM!'
 
 # With explicit rootfs path
 MATCHLOCK_ROOTFS=~/.cache/matchlock/rootfs.ext4 matchlock run uname -a
-
-# Interactive shell (requires terminal)
-matchlock run -it sh
 ```
 
 ### macOS-Specific Notes
 - Uses Apple Virtualization.framework via `github.com/Code-Hex/vz/v3`
 - Native virtio-vsock (no Unix socket CONNECT protocol like Firecracker)
-- Network interception uses gVisor userspace TCP/IP stack with socket pairs
-- Image builder (`matchlock build`) requires Linux (uses `mkfs.ext4`)
+- Network uses NAT mode with DHCP (no traffic interception yet)
+- Image builder uses `mke2fs` and `debugfs` from e2fsprogs to create ext4 without mounting
 
 ## Configuration
 

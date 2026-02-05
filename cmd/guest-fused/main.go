@@ -1,8 +1,9 @@
-// Guest FUSE daemon connects to the host VFS server over vsock
-// and mounts a FUSE filesystem at /workspace
+// Guest FUSE daemon using go-fuse library
+// Connects to host VFS server over vsock and mounts at /workspace
 package main
 
 import (
+	"context"
 	"encoding/binary"
 	"fmt"
 	"os"
@@ -14,6 +15,8 @@ import (
 	"unsafe"
 
 	"github.com/fxamacker/cbor/v2"
+	"github.com/hanwen/go-fuse/v2/fs"
+	"github.com/hanwen/go-fuse/v2/fuse"
 )
 
 const (
@@ -22,15 +25,7 @@ const (
 	VsockPortVFS    = 5001
 )
 
-type sockaddrVM struct {
-	Family    uint16
-	Reserved1 uint16
-	Port      uint32
-	CID       uint32
-	Zero      [4]byte
-}
-
-// VFS protocol operations (must match pkg/vfs/server.go)
+// VFS protocol (must match pkg/vfs/server.go)
 type OpCode uint8
 
 const (
@@ -49,6 +44,10 @@ const (
 	OpReaddir
 	OpFsync
 	OpMkdirAll
+	OpTruncate
+	OpSymlink
+	OpReadlink
+	OpLink
 )
 
 type VFSRequest struct {
@@ -86,193 +85,7 @@ type VFSDirEntry struct {
 	Size  int64  `cbor:"size"`
 }
 
-// FUSE constants
-const (
-	FUSE_ROOT_ID = 1
-
-	FUSE_LOOKUP     = 1
-	FUSE_GETATTR    = 3
-	FUSE_SETATTR    = 4
-	FUSE_READLINK   = 5
-	FUSE_OPEN       = 14
-	FUSE_READ       = 15
-	FUSE_WRITE      = 16
-	FUSE_RELEASE    = 18
-	FUSE_FSYNC      = 20
-	FUSE_OPENDIR    = 27
-	FUSE_READDIR    = 28
-	FUSE_RELEASEDIR = 29
-	FUSE_INIT       = 26
-	FUSE_MKDIR      = 9
-	FUSE_UNLINK     = 10
-	FUSE_RMDIR      = 11
-	FUSE_RENAME     = 12
-	FUSE_CREATE     = 35
-	FUSE_DESTROY    = 38
-
-	FATTR_MODE = 1 << 0
-	FATTR_SIZE = 1 << 3
-
-	S_IFDIR = 0o40000
-	S_IFREG = 0o100000
-
-	FUSE_KERNEL_VERSION       = 7
-	FUSE_KERNEL_MINOR_VERSION = 38
-)
-
-type fuseInHeader struct {
-	Len     uint32
-	Opcode  uint32
-	Unique  uint64
-	Nodeid  uint64
-	Uid     uint32
-	Gid     uint32
-	Pid     uint32
-	Padding uint32
-}
-
-type fuseOutHeader struct {
-	Len    uint32
-	Error  int32
-	Unique uint64
-}
-
-type fuseInitIn struct {
-	Major        uint32
-	Minor        uint32
-	MaxReadahead uint32
-	Flags        uint32
-}
-
-type fuseInitOut struct {
-	Major               uint32
-	Minor               uint32
-	MaxReadahead        uint32
-	Flags               uint32
-	MaxBackground       uint16
-	CongestionThreshold uint16
-	MaxWrite            uint32
-	TimeGran            uint32
-	MaxPages            uint16
-	MapAlignment        uint16
-	Flags2              uint32
-	Unused              [7]uint32
-}
-
-type fuseAttrOut struct {
-	AttrValid     uint64
-	AttrValidNsec uint32
-	Dummy         uint32
-	Attr          fuseAttr
-}
-
-type fuseAttr struct {
-	Ino       uint64
-	Size      uint64
-	Blocks    uint64
-	Atime     uint64
-	Mtime     uint64
-	Ctime     uint64
-	AtimeNsec uint32
-	MtimeNsec uint32
-	CtimeNsec uint32
-	Mode      uint32
-	Nlink     uint32
-	Uid       uint32
-	Gid       uint32
-	Rdev      uint32
-	Blksize   uint32
-	Flags     uint32
-}
-
-type fuseEntryOut struct {
-	Nodeid         uint64
-	Generation     uint64
-	EntryValid     uint64
-	AttrValid      uint64
-	EntryValidNsec uint32
-	AttrValidNsec  uint32
-	Attr           fuseAttr
-}
-
-type fuseOpenIn struct {
-	Flags  uint32
-	Unused uint32
-}
-
-type fuseOpenOut struct {
-	Fh        uint64
-	OpenFlags uint32
-	Padding   uint32
-}
-
-type fuseReadIn struct {
-	Fh        uint64
-	Offset    uint64
-	Size      uint32
-	ReadFlags uint32
-	LockOwner uint64
-	Flags     uint32
-	Padding   uint32
-}
-
-type fuseWriteIn struct {
-	Fh         uint64
-	Offset     uint64
-	Size       uint32
-	WriteFlags uint32
-	LockOwner  uint64
-	Flags      uint32
-	Padding    uint32
-}
-
-type fuseWriteOut struct {
-	Size    uint32
-	Padding uint32
-}
-
-type fuseCreateIn struct {
-	Flags   uint32
-	Mode    uint32
-	Umask   uint32
-	Padding uint32
-}
-
-type fuseMkdirIn struct {
-	Mode  uint32
-	Umask uint32
-}
-
-type fuseRenameIn struct {
-	Newdir uint64
-}
-
-type fuseSetAttrIn struct {
-	Valid     uint32
-	Padding   uint32
-	Fh        uint64
-	Size      uint64
-	LockOwner uint64
-	Atime     uint64
-	Mtime     uint64
-	Ctime     uint64
-	AtimeNsec uint32
-	MtimeNsec uint32
-	CtimeNsec uint32
-	Mode      uint32
-	Unused4   uint32
-	Uid       uint32
-	Gid       uint32
-	Unused5   uint32
-}
-
-type fuseDirent struct {
-	Ino     uint64
-	Off     uint64
-	Namelen uint32
-	Type    uint32
-}
-
+// VFSClient communicates with host VFS server over vsock
 type VFSClient struct {
 	fd int
 	mu sync.Mutex
@@ -325,567 +138,444 @@ func (c *VFSClient) Request(req *VFSRequest) (*VFSResponse, error) {
 	return &resp, nil
 }
 
-type FUSEServer struct {
-	fuseFD  int
-	client  *VFSClient
-	inodes  sync.Map // inode -> path
-	nextIno uint64
-	inoMu   sync.Mutex
-	pathIno sync.Map // path -> inode
+// VFSRoot is the root node of the FUSE filesystem
+type VFSRoot struct {
+	fs.Inode
+	client   *VFSClient
+	basePath string
 }
 
-func NewFUSEServer(mountpoint string, client *VFSClient) (*FUSEServer, error) {
-	fuseFD, err := syscall.Open("/dev/fuse", syscall.O_RDWR, 0)
+var _ = (fs.NodeGetattrer)((*VFSRoot)(nil))
+var _ = (fs.NodeLookuper)((*VFSRoot)(nil))
+var _ = (fs.NodeReaddirer)((*VFSRoot)(nil))
+var _ = (fs.NodeMkdirer)((*VFSRoot)(nil))
+var _ = (fs.NodeCreater)((*VFSRoot)(nil))
+var _ = (fs.NodeUnlinker)((*VFSRoot)(nil))
+var _ = (fs.NodeRmdirer)((*VFSRoot)(nil))
+var _ = (fs.NodeRenamer)((*VFSRoot)(nil))
+
+// VFSNode represents a file or directory in the VFS
+type VFSNode struct {
+	fs.Inode
+	client *VFSClient
+	path   string
+	isDir  bool
+}
+
+var _ = (fs.NodeGetattrer)((*VFSNode)(nil))
+var _ = (fs.NodeLookuper)((*VFSNode)(nil))
+var _ = (fs.NodeReaddirer)((*VFSNode)(nil))
+var _ = (fs.NodeOpener)((*VFSNode)(nil))
+var _ = (fs.NodeMkdirer)((*VFSNode)(nil))
+var _ = (fs.NodeCreater)((*VFSNode)(nil))
+var _ = (fs.NodeUnlinker)((*VFSNode)(nil))
+var _ = (fs.NodeRmdirer)((*VFSNode)(nil))
+var _ = (fs.NodeRenamer)((*VFSNode)(nil))
+var _ = (fs.NodeSetattrer)((*VFSNode)(nil))
+
+func (r *VFSRoot) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	resp, err := r.client.Request(&VFSRequest{Op: OpGetattr, Path: r.basePath})
 	if err != nil {
-		return nil, fmt.Errorf("failed to open /dev/fuse: %w", err)
+		return syscall.EIO
 	}
-
-	mountOpts := fmt.Sprintf("fd=%d,rootmode=40000,user_id=%d,group_id=%d",
-		fuseFD, os.Getuid(), os.Getgid())
-
-	if err := syscall.Mount("fuse", mountpoint, "fuse", 0, mountOpts); err != nil {
-		syscall.Close(fuseFD)
-		return nil, fmt.Errorf("failed to mount FUSE: %w", err)
+	if resp.Err != 0 {
+		return syscall.Errno(-resp.Err)
 	}
-
-	fs := &FUSEServer{
-		fuseFD:  fuseFD,
-		client:  client,
-		nextIno: 2,
-	}
-
-	// Root inode maps to /workspace to match the host VFS mount point
-	fs.inodes.Store(uint64(FUSE_ROOT_ID), "/workspace")
-	fs.pathIno.Store("/workspace", uint64(FUSE_ROOT_ID))
-
-	return fs, nil
+	fillAttr(&out.Attr, resp.Stat)
+	return 0
 }
 
-func (fs *FUSEServer) getPath(ino uint64) string {
-	if p, ok := fs.inodes.Load(ino); ok {
-		return p.(string)
+func (r *VFSRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	path := filepath.Join(r.basePath, name)
+	resp, err := r.client.Request(&VFSRequest{Op: OpLookup, Path: path})
+	if err != nil {
+		return nil, syscall.EIO
 	}
-	return "/workspace"
-}
-
-func (fs *FUSEServer) getOrCreateInode(path string) uint64 {
-	if ino, ok := fs.pathIno.Load(path); ok {
-		return ino.(uint64)
+	if resp.Err != 0 {
+		return nil, syscall.Errno(-resp.Err)
 	}
 
-	fs.inoMu.Lock()
-	ino := fs.nextIno
-	fs.nextIno++
-	fs.inoMu.Unlock()
-
-	fs.inodes.Store(ino, path)
-	fs.pathIno.Store(path, ino)
-	return ino
+	fillAttr(&out.Attr, resp.Stat)
+	node := &VFSNode{client: r.client, path: path, isDir: resp.Stat.IsDir}
+	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	child := r.NewInode(ctx, node, stable)
+	return child, 0
 }
 
-func (fs *FUSEServer) Serve() error {
-	buf := make([]byte, 65536+128)
+func (r *VFSRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	resp, err := r.client.Request(&VFSRequest{Op: OpReaddir, Path: r.basePath})
+	if err != nil {
+		return nil, syscall.EIO
+	}
+	if resp.Err != 0 {
+		return nil, syscall.Errno(-resp.Err)
+	}
 
-	for {
-		n, err := syscall.Read(fs.fuseFD, buf)
-		if err != nil {
-			if err == syscall.ENOENT {
-				continue
-			}
-			if err == syscall.EINTR {
-				continue
-			}
-			return err
+	entries := make([]fuse.DirEntry, len(resp.Entries))
+	for i, e := range resp.Entries {
+		mode := uint32(syscall.S_IFREG)
+		if e.IsDir {
+			mode = syscall.S_IFDIR
 		}
-
-		if n < int(unsafe.Sizeof(fuseInHeader{})) {
-			continue
-		}
-
-		hdr := (*fuseInHeader)(unsafe.Pointer(&buf[0]))
-		data := buf[unsafe.Sizeof(fuseInHeader{}):n]
-
-		fs.handleRequest(hdr, data)
+		entries[i] = fuse.DirEntry{Name: e.Name, Mode: mode}
 	}
+	return fs.NewListDirStream(entries), 0
 }
 
-func (fs *FUSEServer) handleRequest(hdr *fuseInHeader, data []byte) {
-	switch hdr.Opcode {
-	case FUSE_INIT:
-		fs.handleInit(hdr, data)
-	case FUSE_GETATTR:
-		fs.handleGetattr(hdr)
-	case FUSE_LOOKUP:
-		fs.handleLookup(hdr, data)
-	case FUSE_OPEN:
-		fs.handleOpen(hdr, data)
-	case FUSE_OPENDIR:
-		fs.handleOpendir(hdr)
-	case FUSE_READ:
-		fs.handleRead(hdr, data)
-	case FUSE_READDIR:
-		fs.handleReaddir(hdr, data)
-	case FUSE_RELEASE, FUSE_RELEASEDIR:
-		fs.handleRelease(hdr, data)
-	case FUSE_WRITE:
-		fs.handleWrite(hdr, data)
-	case FUSE_CREATE:
-		fs.handleCreate(hdr, data)
-	case FUSE_MKDIR:
-		fs.handleMkdir(hdr, data)
-	case FUSE_UNLINK:
-		fs.handleUnlink(hdr, data)
-	case FUSE_RMDIR:
-		fs.handleRmdir(hdr, data)
-	case FUSE_RENAME:
-		fs.handleRename(hdr, data)
-	case FUSE_SETATTR:
-		fs.handleSetattr(hdr, data)
-	case FUSE_FSYNC:
-		fs.handleFsync(hdr, data)
-	case FUSE_DESTROY:
-		fs.sendError(hdr.Unique, 0)
+func (r *VFSRoot) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	path := filepath.Join(r.basePath, name)
+	resp, err := r.client.Request(&VFSRequest{Op: OpMkdir, Path: path, Mode: mode})
+	if err != nil {
+		return nil, syscall.EIO
+	}
+	if resp.Err != 0 {
+		return nil, syscall.Errno(-resp.Err)
+	}
+
+	out.Attr.Mode = syscall.S_IFDIR | mode
+	node := &VFSNode{client: r.client, path: path, isDir: true}
+	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	child := r.NewInode(ctx, node, stable)
+	return child, 0
+}
+
+func (r *VFSRoot) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
+	path := filepath.Join(r.basePath, name)
+	resp, err := r.client.Request(&VFSRequest{Op: OpCreate, Path: path, Mode: mode})
+	if err != nil {
+		return nil, nil, 0, syscall.EIO
+	}
+	if resp.Err != 0 {
+		return nil, nil, 0, syscall.Errno(-resp.Err)
+	}
+
+	out.Attr.Mode = syscall.S_IFREG | mode
+	node := &VFSNode{client: r.client, path: path, isDir: false}
+	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	child := r.NewInode(ctx, node, stable)
+	handle := &VFSFileHandle{client: r.client, handle: resp.Handle, path: path}
+	return child, handle, 0, 0
+}
+
+func (r *VFSRoot) Unlink(ctx context.Context, name string) syscall.Errno {
+	path := filepath.Join(r.basePath, name)
+	resp, err := r.client.Request(&VFSRequest{Op: OpUnlink, Path: path})
+	if err != nil {
+		return syscall.EIO
+	}
+	if resp.Err != 0 {
+		return syscall.Errno(-resp.Err)
+	}
+	return 0
+}
+
+func (r *VFSRoot) Rmdir(ctx context.Context, name string) syscall.Errno {
+	path := filepath.Join(r.basePath, name)
+	resp, err := r.client.Request(&VFSRequest{Op: OpRmdir, Path: path})
+	if err != nil {
+		return syscall.EIO
+	}
+	if resp.Err != 0 {
+		return syscall.Errno(-resp.Err)
+	}
+	return 0
+}
+
+func (r *VFSRoot) Rename(ctx context.Context, name string, newParent fs.InodeEmbedder, newName string, flags uint32) syscall.Errno {
+	oldPath := filepath.Join(r.basePath, name)
+	var newPath string
+	switch p := newParent.(type) {
+	case *VFSRoot:
+		newPath = filepath.Join(p.basePath, newName)
+	case *VFSNode:
+		newPath = filepath.Join(p.path, newName)
 	default:
-		fs.sendError(hdr.Unique, -int32(syscall.ENOSYS))
-	}
-}
-
-func (fs *FUSEServer) handleInit(hdr *fuseInHeader, data []byte) {
-	out := fuseInitOut{
-		Major:               FUSE_KERNEL_VERSION,
-		Minor:               FUSE_KERNEL_MINOR_VERSION,
-		MaxReadahead:        65536,
-		MaxWrite:            65536,
-		MaxBackground:       16,
-		CongestionThreshold: 12,
-		TimeGran:            1,
+		return syscall.EINVAL
 	}
 
-	fs.sendReply(hdr.Unique, unsafe.Slice((*byte)(unsafe.Pointer(&out)), unsafe.Sizeof(out)))
+	resp, err := r.client.Request(&VFSRequest{Op: OpRename, Path: oldPath, NewPath: newPath})
+	if err != nil {
+		return syscall.EIO
+	}
+	if resp.Err != 0 {
+		return syscall.Errno(-resp.Err)
+	}
+	return 0
 }
 
-func (fs *FUSEServer) handleGetattr(hdr *fuseInHeader) {
-	path := fs.getPath(hdr.Nodeid)
+// VFSNode implementations
 
-	resp, err := fs.client.Request(&VFSRequest{Op: OpGetattr, Path: path})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.EIO)
-		if resp != nil {
-			errno = resp.Err
+func (n *VFSNode) Getattr(ctx context.Context, fh fs.FileHandle, out *fuse.AttrOut) syscall.Errno {
+	resp, err := n.client.Request(&VFSRequest{Op: OpGetattr, Path: n.path})
+	if err != nil {
+		return syscall.EIO
+	}
+	if resp.Err != 0 {
+		return syscall.Errno(-resp.Err)
+	}
+	fillAttr(&out.Attr, resp.Stat)
+	return 0
+}
+
+func (n *VFSNode) Setattr(ctx context.Context, fh fs.FileHandle, in *fuse.SetAttrIn, out *fuse.AttrOut) syscall.Errno {
+	// Handle truncate
+	if sz, ok := in.GetSize(); ok {
+		resp, err := n.client.Request(&VFSRequest{Op: OpOpen, Path: n.path, Flags: uint32(os.O_RDWR)})
+		if err != nil {
+			return syscall.EIO
 		}
-		fs.sendError(hdr.Unique, errno)
-		return
-	}
-
-	out := fuseAttrOut{
-		AttrValid: 1,
-		Attr:      fs.statToAttr(hdr.Nodeid, resp.Stat),
-	}
-
-	fs.sendReply(hdr.Unique, unsafe.Slice((*byte)(unsafe.Pointer(&out)), unsafe.Sizeof(out)))
-}
-
-func (fs *FUSEServer) handleLookup(hdr *fuseInHeader, data []byte) {
-	name := string(data[:len(data)-1])
-	parentPath := fs.getPath(hdr.Nodeid)
-	childPath := filepath.Join(parentPath, name)
-
-	resp, err := fs.client.Request(&VFSRequest{Op: OpLookup, Path: childPath})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.ENOENT)
-		if resp != nil && resp.Err != 0 {
-			errno = resp.Err
+		if resp.Err != 0 {
+			return syscall.Errno(-resp.Err)
 		}
-		fs.sendError(hdr.Unique, errno)
-		return
-	}
+		handle := resp.Handle
 
-	ino := fs.getOrCreateInode(childPath)
-
-	out := fuseEntryOut{
-		Nodeid:     ino,
-		Generation: 1,
-		EntryValid: 1,
-		AttrValid:  1,
-		Attr:       fs.statToAttr(ino, resp.Stat),
-	}
-
-	fs.sendReply(hdr.Unique, unsafe.Slice((*byte)(unsafe.Pointer(&out)), unsafe.Sizeof(out)))
-}
-
-func (fs *FUSEServer) handleOpen(hdr *fuseInHeader, data []byte) {
-	in := (*fuseOpenIn)(unsafe.Pointer(&data[0]))
-	path := fs.getPath(hdr.Nodeid)
-
-	resp, err := fs.client.Request(&VFSRequest{Op: OpOpen, Path: path, Flags: in.Flags})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.EIO)
-		if resp != nil {
-			errno = resp.Err
+		// Write empty data at truncate point (simple truncate simulation)
+		if sz == 0 {
+			// Create empty file by reopening with O_TRUNC
+			n.client.Request(&VFSRequest{Op: OpRelease, Handle: handle})
+			resp, err = n.client.Request(&VFSRequest{Op: OpCreate, Path: n.path, Mode: 0644})
+			if err != nil {
+				return syscall.EIO
+			}
+			if resp.Err != 0 {
+				return syscall.Errno(-resp.Err)
+			}
+			n.client.Request(&VFSRequest{Op: OpRelease, Handle: resp.Handle})
+		} else {
+			n.client.Request(&VFSRequest{Op: OpRelease, Handle: handle})
 		}
-		fs.sendError(hdr.Unique, errno)
-		return
 	}
 
-	out := fuseOpenOut{Fh: resp.Handle}
-	fs.sendReply(hdr.Unique, unsafe.Slice((*byte)(unsafe.Pointer(&out)), unsafe.Sizeof(out)))
+	// Return current attributes
+	return n.Getattr(ctx, fh, out)
 }
 
-func (fs *FUSEServer) handleOpendir(hdr *fuseInHeader) {
-	out := fuseOpenOut{Fh: hdr.Nodeid}
-	fs.sendReply(hdr.Unique, unsafe.Slice((*byte)(unsafe.Pointer(&out)), unsafe.Sizeof(out)))
+func (n *VFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	path := filepath.Join(n.path, name)
+	resp, err := n.client.Request(&VFSRequest{Op: OpLookup, Path: path})
+	if err != nil {
+		return nil, syscall.EIO
+	}
+	if resp.Err != 0 {
+		return nil, syscall.Errno(-resp.Err)
+	}
+
+	fillAttr(&out.Attr, resp.Stat)
+	node := &VFSNode{client: n.client, path: path, isDir: resp.Stat.IsDir}
+	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	child := n.NewInode(ctx, node, stable)
+	return child, 0
 }
 
-func (fs *FUSEServer) handleRead(hdr *fuseInHeader, data []byte) {
-	in := (*fuseReadIn)(unsafe.Pointer(&data[0]))
+func (n *VFSNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
+	resp, err := n.client.Request(&VFSRequest{Op: OpReaddir, Path: n.path})
+	if err != nil {
+		return nil, syscall.EIO
+	}
+	if resp.Err != 0 {
+		return nil, syscall.Errno(-resp.Err)
+	}
 
-	resp, err := fs.client.Request(&VFSRequest{
+	entries := make([]fuse.DirEntry, len(resp.Entries))
+	for i, e := range resp.Entries {
+		mode := uint32(syscall.S_IFREG)
+		if e.IsDir {
+			mode = syscall.S_IFDIR
+		}
+		entries[i] = fuse.DirEntry{Name: e.Name, Mode: mode}
+	}
+	return fs.NewListDirStream(entries), 0
+}
+
+func (n *VFSNode) Open(ctx context.Context, flags uint32) (fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
+	resp, err := n.client.Request(&VFSRequest{Op: OpOpen, Path: n.path, Flags: flags})
+	if err != nil {
+		return nil, 0, syscall.EIO
+	}
+	if resp.Err != 0 {
+		return nil, 0, syscall.Errno(-resp.Err)
+	}
+	return &VFSFileHandle{client: n.client, handle: resp.Handle, path: n.path}, 0, 0
+}
+
+func (n *VFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse.EntryOut) (*fs.Inode, syscall.Errno) {
+	path := filepath.Join(n.path, name)
+	resp, err := n.client.Request(&VFSRequest{Op: OpMkdir, Path: path, Mode: mode})
+	if err != nil {
+		return nil, syscall.EIO
+	}
+	if resp.Err != 0 {
+		return nil, syscall.Errno(-resp.Err)
+	}
+
+	out.Attr.Mode = syscall.S_IFDIR | mode
+	node := &VFSNode{client: n.client, path: path, isDir: true}
+	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	child := n.NewInode(ctx, node, stable)
+	return child, 0
+}
+
+func (n *VFSNode) Create(ctx context.Context, name string, flags uint32, mode uint32, out *fuse.EntryOut) (inode *fs.Inode, fh fs.FileHandle, fuseFlags uint32, errno syscall.Errno) {
+	path := filepath.Join(n.path, name)
+	resp, err := n.client.Request(&VFSRequest{Op: OpCreate, Path: path, Mode: mode})
+	if err != nil {
+		return nil, nil, 0, syscall.EIO
+	}
+	if resp.Err != 0 {
+		return nil, nil, 0, syscall.Errno(-resp.Err)
+	}
+
+	out.Attr.Mode = syscall.S_IFREG | mode
+	node := &VFSNode{client: n.client, path: path, isDir: false}
+	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	child := n.NewInode(ctx, node, stable)
+	handle := &VFSFileHandle{client: n.client, handle: resp.Handle, path: path}
+	return child, handle, 0, 0
+}
+
+func (n *VFSNode) Unlink(ctx context.Context, name string) syscall.Errno {
+	path := filepath.Join(n.path, name)
+	resp, err := n.client.Request(&VFSRequest{Op: OpUnlink, Path: path})
+	if err != nil {
+		return syscall.EIO
+	}
+	if resp.Err != 0 {
+		return syscall.Errno(-resp.Err)
+	}
+	return 0
+}
+
+func (n *VFSNode) Rmdir(ctx context.Context, name string) syscall.Errno {
+	path := filepath.Join(n.path, name)
+	resp, err := n.client.Request(&VFSRequest{Op: OpRmdir, Path: path})
+	if err != nil {
+		return syscall.EIO
+	}
+	if resp.Err != 0 {
+		return syscall.Errno(-resp.Err)
+	}
+	return 0
+}
+
+func (n *VFSNode) Rename(ctx context.Context, name string, newParent fs.InodeEmbedder, newName string, flags uint32) syscall.Errno {
+	oldPath := filepath.Join(n.path, name)
+	var newPath string
+	switch p := newParent.(type) {
+	case *VFSRoot:
+		newPath = filepath.Join(p.basePath, newName)
+	case *VFSNode:
+		newPath = filepath.Join(p.path, newName)
+	default:
+		return syscall.EINVAL
+	}
+
+	resp, err := n.client.Request(&VFSRequest{Op: OpRename, Path: oldPath, NewPath: newPath})
+	if err != nil {
+		return syscall.EIO
+	}
+	if resp.Err != 0 {
+		return syscall.Errno(-resp.Err)
+	}
+	return 0
+}
+
+// VFSFileHandle handles read/write operations on open files
+type VFSFileHandle struct {
+	client *VFSClient
+	handle uint64
+	path   string
+}
+
+var _ = (fs.FileReader)((*VFSFileHandle)(nil))
+var _ = (fs.FileWriter)((*VFSFileHandle)(nil))
+var _ = (fs.FileFsyncer)((*VFSFileHandle)(nil))
+var _ = (fs.FileReleaser)((*VFSFileHandle)(nil))
+var _ = (fs.FileGetattrer)((*VFSFileHandle)(nil))
+
+func (h *VFSFileHandle) Read(ctx context.Context, dest []byte, off int64) (fuse.ReadResult, syscall.Errno) {
+	resp, err := h.client.Request(&VFSRequest{
 		Op:     OpRead,
-		Handle: in.Fh,
-		Offset: int64(in.Offset),
-		Size:   in.Size,
+		Handle: h.handle,
+		Offset: off,
+		Size:   uint32(len(dest)),
 	})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.EIO)
-		if resp != nil {
-			errno = resp.Err
-		}
-		fs.sendError(hdr.Unique, errno)
-		return
+	if err != nil {
+		return nil, syscall.EIO
 	}
-
-	fs.sendReply(hdr.Unique, resp.Data)
+	if resp.Err != 0 {
+		return nil, syscall.Errno(-resp.Err)
+	}
+	return fuse.ReadResultData(resp.Data), 0
 }
 
-func (fs *FUSEServer) handleReaddir(hdr *fuseInHeader, data []byte) {
-	in := (*fuseReadIn)(unsafe.Pointer(&data[0]))
-	path := fs.getPath(hdr.Nodeid)
-
-	resp, err := fs.client.Request(&VFSRequest{Op: OpReaddir, Path: path})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.EIO)
-		if resp != nil {
-			errno = resp.Err
-		}
-		fs.sendError(hdr.Unique, errno)
-		return
-	}
-
-	buf := make([]byte, 0, in.Size)
-	offset := uint64(0)
-
-	for i, entry := range resp.Entries {
-		entryType := uint32(8) // DT_REG
-		if entry.IsDir {
-			entryType = 4 // DT_DIR
-		}
-
-		childPath := filepath.Join(path, entry.Name)
-		ino := fs.getOrCreateInode(childPath)
-
-		namebytes := []byte(entry.Name)
-		reclen := (24 + len(namebytes) + 7) &^ 7
-
-		if uint64(i) < in.Offset {
-			offset++
-			continue
-		}
-
-		if len(buf)+reclen > int(in.Size) {
-			break
-		}
-
-		dirent := fuseDirent{
-			Ino:     ino,
-			Off:     offset + 1,
-			Namelen: uint32(len(namebytes)),
-			Type:    entryType,
-		}
-
-		dirBytes := unsafe.Slice((*byte)(unsafe.Pointer(&dirent)), 24)
-		buf = append(buf, dirBytes...)
-		buf = append(buf, namebytes...)
-
-		padding := reclen - 24 - len(namebytes)
-		for j := 0; j < padding; j++ {
-			buf = append(buf, 0)
-		}
-
-		offset++
-	}
-
-	fs.sendReply(hdr.Unique, buf)
-}
-
-func (fs *FUSEServer) handleRelease(hdr *fuseInHeader, data []byte) {
-	in := (*fuseOpenIn)(unsafe.Pointer(&data[0]))
-
-	fs.client.Request(&VFSRequest{Op: OpRelease, Handle: uint64(in.Flags)})
-	fs.sendError(hdr.Unique, 0)
-}
-
-func (fs *FUSEServer) handleWrite(hdr *fuseInHeader, data []byte) {
-	in := (*fuseWriteIn)(unsafe.Pointer(&data[0]))
-	writeData := data[unsafe.Sizeof(fuseWriteIn{}):]
-
-	resp, err := fs.client.Request(&VFSRequest{
+func (h *VFSFileHandle) Write(ctx context.Context, data []byte, off int64) (uint32, syscall.Errno) {
+	resp, err := h.client.Request(&VFSRequest{
 		Op:     OpWrite,
-		Handle: in.Fh,
-		Offset: int64(in.Offset),
-		Data:   writeData,
+		Handle: h.handle,
+		Offset: off,
+		Data:   data,
 	})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.EIO)
-		if resp != nil {
-			errno = resp.Err
-		}
-		fs.sendError(hdr.Unique, errno)
-		return
+	if err != nil {
+		return 0, syscall.EIO
 	}
-
-	out := fuseWriteOut{Size: resp.Written}
-	fs.sendReply(hdr.Unique, unsafe.Slice((*byte)(unsafe.Pointer(&out)), unsafe.Sizeof(out)))
+	if resp.Err != 0 {
+		return 0, syscall.Errno(-resp.Err)
+	}
+	return resp.Written, 0
 }
 
-func (fs *FUSEServer) handleCreate(hdr *fuseInHeader, data []byte) {
-	in := (*fuseCreateIn)(unsafe.Pointer(&data[0]))
-	name := string(data[unsafe.Sizeof(fuseCreateIn{}):])
-	name = name[:len(name)-1]
-
-	parentPath := fs.getPath(hdr.Nodeid)
-	childPath := filepath.Join(parentPath, name)
-
-	resp, err := fs.client.Request(&VFSRequest{
-		Op:   OpCreate,
-		Path: childPath,
-		Mode: in.Mode,
-	})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.EIO)
-		if resp != nil {
-			errno = resp.Err
-		}
-		fs.sendError(hdr.Unique, errno)
-		return
+func (h *VFSFileHandle) Fsync(ctx context.Context, flags uint32) syscall.Errno {
+	resp, err := h.client.Request(&VFSRequest{Op: OpFsync, Handle: h.handle})
+	if err != nil {
+		return syscall.EIO
 	}
-
-	ino := fs.getOrCreateInode(childPath)
-
-	out := make([]byte, unsafe.Sizeof(fuseEntryOut{})+unsafe.Sizeof(fuseOpenOut{}))
-	entry := (*fuseEntryOut)(unsafe.Pointer(&out[0]))
-	open := (*fuseOpenOut)(unsafe.Pointer(&out[unsafe.Sizeof(fuseEntryOut{})]))
-
-	entry.Nodeid = ino
-	entry.Generation = 1
-	entry.EntryValid = 1
-	entry.AttrValid = 1
-	entry.Attr = fuseAttr{
-		Ino:   ino,
-		Mode:  S_IFREG | (in.Mode & 0o777),
-		Nlink: 1,
-		Uid:   uint32(os.Getuid()),
-		Gid:   uint32(os.Getgid()),
+	if resp.Err != 0 {
+		return syscall.Errno(-resp.Err)
 	}
-
-	open.Fh = resp.Handle
-
-	fs.sendReply(hdr.Unique, out)
+	return 0
 }
 
-func (fs *FUSEServer) handleMkdir(hdr *fuseInHeader, data []byte) {
-	in := (*fuseMkdirIn)(unsafe.Pointer(&data[0]))
-	name := string(data[unsafe.Sizeof(fuseMkdirIn{}):])
-	name = name[:len(name)-1]
-
-	parentPath := fs.getPath(hdr.Nodeid)
-	childPath := filepath.Join(parentPath, name)
-
-	resp, err := fs.client.Request(&VFSRequest{
-		Op:   OpMkdir,
-		Path: childPath,
-		Mode: in.Mode,
-	})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.EIO)
-		if resp != nil {
-			errno = resp.Err
-		}
-		fs.sendError(hdr.Unique, errno)
-		return
-	}
-
-	ino := fs.getOrCreateInode(childPath)
-
-	out := fuseEntryOut{
-		Nodeid:     ino,
-		Generation: 1,
-		EntryValid: 1,
-		AttrValid:  1,
-		Attr: fuseAttr{
-			Ino:   ino,
-			Mode:  S_IFDIR | (in.Mode & 0o777),
-			Nlink: 2,
-			Uid:   uint32(os.Getuid()),
-			Gid:   uint32(os.Getgid()),
-		},
-	}
-
-	fs.sendReply(hdr.Unique, unsafe.Slice((*byte)(unsafe.Pointer(&out)), unsafe.Sizeof(out)))
+func (h *VFSFileHandle) Release(ctx context.Context) syscall.Errno {
+	h.client.Request(&VFSRequest{Op: OpRelease, Handle: h.handle})
+	return 0
 }
 
-func (fs *FUSEServer) handleUnlink(hdr *fuseInHeader, data []byte) {
-	name := string(data[:len(data)-1])
-	parentPath := fs.getPath(hdr.Nodeid)
-	childPath := filepath.Join(parentPath, name)
-
-	resp, err := fs.client.Request(&VFSRequest{Op: OpUnlink, Path: childPath})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.EIO)
-		if resp != nil {
-			errno = resp.Err
-		}
-		fs.sendError(hdr.Unique, errno)
-		return
+func (h *VFSFileHandle) Getattr(ctx context.Context, out *fuse.AttrOut) syscall.Errno {
+	resp, err := h.client.Request(&VFSRequest{Op: OpGetattr, Path: h.path})
+	if err != nil {
+		return syscall.EIO
 	}
-
-	fs.sendError(hdr.Unique, 0)
+	if resp.Err != 0 {
+		return syscall.Errno(-resp.Err)
+	}
+	fillAttr(&out.Attr, resp.Stat)
+	return 0
 }
 
-func (fs *FUSEServer) handleRmdir(hdr *fuseInHeader, data []byte) {
-	name := string(data[:len(data)-1])
-	parentPath := fs.getPath(hdr.Nodeid)
-	childPath := filepath.Join(parentPath, name)
-
-	resp, err := fs.client.Request(&VFSRequest{Op: OpRmdir, Path: childPath})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.EIO)
-		if resp != nil {
-			errno = resp.Err
-		}
-		fs.sendError(hdr.Unique, errno)
-		return
-	}
-
-	fs.sendError(hdr.Unique, 0)
-}
-
-func (fs *FUSEServer) handleRename(hdr *fuseInHeader, data []byte) {
-	in := (*fuseRenameIn)(unsafe.Pointer(&data[0]))
-	names := data[unsafe.Sizeof(fuseRenameIn{}):]
-
-	oldName := ""
-	newName := ""
-	for i, b := range names {
-		if b == 0 {
-			oldName = string(names[:i])
-			newName = string(names[i+1 : len(names)-1])
-			break
-		}
-	}
-
-	oldParentPath := fs.getPath(hdr.Nodeid)
-	newParentPath := fs.getPath(in.Newdir)
-	oldPath := filepath.Join(oldParentPath, oldName)
-	newPath := filepath.Join(newParentPath, newName)
-
-	resp, err := fs.client.Request(&VFSRequest{
-		Op:      OpRename,
-		Path:    oldPath,
-		NewPath: newPath,
-	})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.EIO)
-		if resp != nil {
-			errno = resp.Err
-		}
-		fs.sendError(hdr.Unique, errno)
-		return
-	}
-
-	fs.sendError(hdr.Unique, 0)
-}
-
-func (fs *FUSEServer) handleSetattr(hdr *fuseInHeader, data []byte) {
-	path := fs.getPath(hdr.Nodeid)
-
-	resp, err := fs.client.Request(&VFSRequest{Op: OpGetattr, Path: path})
-	if err != nil || resp.Err != 0 {
-		errno := int32(syscall.EIO)
-		if resp != nil {
-			errno = resp.Err
-		}
-		fs.sendError(hdr.Unique, errno)
-		return
-	}
-
-	out := fuseAttrOut{
-		AttrValid: 1,
-		Attr:      fs.statToAttr(hdr.Nodeid, resp.Stat),
-	}
-
-	fs.sendReply(hdr.Unique, unsafe.Slice((*byte)(unsafe.Pointer(&out)), unsafe.Sizeof(out)))
-}
-
-func (fs *FUSEServer) handleFsync(hdr *fuseInHeader, data []byte) {
-	in := (*fuseOpenIn)(unsafe.Pointer(&data[0]))
-
-	fs.client.Request(&VFSRequest{Op: OpFsync, Handle: uint64(in.Flags)})
-	fs.sendError(hdr.Unique, 0)
-}
-
-func (fs *FUSEServer) statToAttr(ino uint64, stat *VFSStat) fuseAttr {
-	mode := stat.Mode
+func fillAttr(attr *fuse.Attr, stat *VFSStat) {
+	attr.Size = uint64(stat.Size)
+	attr.Mtime = uint64(stat.ModTime)
+	attr.Ctime = uint64(stat.ModTime)
+	attr.Atime = uint64(stat.ModTime)
+	attr.Blksize = 4096
+	attr.Blocks = (uint64(stat.Size) + 511) / 512
 	if stat.IsDir {
-		mode = S_IFDIR | (mode & 0o777)
+		attr.Mode = syscall.S_IFDIR | (stat.Mode & 0777)
+		attr.Nlink = 2
 	} else {
-		mode = S_IFREG | (mode & 0o777)
-	}
-
-	nlink := uint32(1)
-	if stat.IsDir {
-		nlink = 2
-	}
-
-	return fuseAttr{
-		Ino:     ino,
-		Size:    uint64(stat.Size),
-		Mode:    mode,
-		Nlink:   nlink,
-		Uid:     uint32(os.Getuid()),
-		Gid:     uint32(os.Getgid()),
-		Mtime:   uint64(stat.ModTime),
-		Ctime:   uint64(stat.ModTime),
-		Atime:   uint64(stat.ModTime),
-		Blksize: 4096,
+		attr.Mode = syscall.S_IFREG | (stat.Mode & 0777)
+		attr.Nlink = 1
 	}
 }
 
-func (fs *FUSEServer) sendReply(unique uint64, data []byte) {
-	hdr := fuseOutHeader{
-		Len:    uint32(unsafe.Sizeof(fuseOutHeader{})) + uint32(len(data)),
-		Unique: unique,
-	}
+// Vsock helpers
 
-	buf := make([]byte, hdr.Len)
-	copy(buf, unsafe.Slice((*byte)(unsafe.Pointer(&hdr)), unsafe.Sizeof(hdr)))
-	copy(buf[unsafe.Sizeof(hdr):], data)
-
-	syscall.Write(fs.fuseFD, buf)
-}
-
-func (fs *FUSEServer) sendError(unique uint64, errno int32) {
-	hdr := fuseOutHeader{
-		Len:    uint32(unsafe.Sizeof(fuseOutHeader{})),
-		Error:  errno,
-		Unique: unique,
-	}
-
-	buf := unsafe.Slice((*byte)(unsafe.Pointer(&hdr)), unsafe.Sizeof(hdr))
-	syscall.Write(fs.fuseFD, buf)
-}
-
-func (fs *FUSEServer) Close() error {
-	return syscall.Close(fs.fuseFD)
+type sockaddrVM struct {
+	Family    uint16
+	Reserved1 uint16
+	Port      uint32
+	CID       uint32
+	Zero      [4]byte
 }
 
 func dialVsock(cid, port uint32) (int, error) {
@@ -947,16 +637,16 @@ func main() {
 		mountpoint = os.Args[1]
 	}
 
-	fmt.Printf("Guest FUSE daemon starting, mounting at %s...\n", mountpoint)
+	fmt.Printf("Guest FUSE daemon (go-fuse) starting, mounting at %s...\n", mountpoint)
 
 	if err := os.MkdirAll(mountpoint, 0755); err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to create mountpoint: %v\n", err)
 		os.Exit(1)
 	}
 
+	// Connect to host VFS server with retries
 	var client *VFSClient
 	var err error
-
 	for i := 0; i < 30; i++ {
 		client, err = NewVFSClient()
 		if err == nil {
@@ -964,38 +654,46 @@ func main() {
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
-
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to connect to VFS server: %v\n", err)
 		os.Exit(1)
 	}
 	defer client.Close()
-
 	fmt.Println("Connected to VFS server")
 
-	fs, err := NewFUSEServer(mountpoint, client)
+	// Create root node
+	root := &VFSRoot{client: client, basePath: "/workspace"}
+
+	// Mount with go-fuse
+	opts := &fs.Options{
+		MountOptions: fuse.MountOptions{
+			AllowOther: true,
+			FsName:     "matchlock",
+			Name:       "fuse.matchlock",
+			Debug:      false,
+		},
+		AttrTimeout:  &[]time.Duration{time.Second}[0],
+		EntryTimeout: &[]time.Duration{time.Second}[0],
+	}
+
+	server, err := fs.Mount(mountpoint, root, opts)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to create FUSE server: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Failed to mount: %v\n", err)
 		os.Exit(1)
 	}
-	defer fs.Close()
 
 	fmt.Printf("FUSE filesystem mounted at %s\n", mountpoint)
 
+	// Handle signals for graceful shutdown
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
-	errCh := make(chan error, 1)
 	go func() {
-		errCh <- fs.Serve()
+		<-sigCh
+		fmt.Println("Shutting down...")
+		server.Unmount()
 	}()
 
-	select {
-	case <-sigCh:
-		fmt.Println("Shutting down...")
-		syscall.Unmount(mountpoint, 0)
-	case err := <-errCh:
-		fmt.Fprintf(os.Stderr, "FUSE server error: %v\n", err)
-		os.Exit(1)
-	}
+	// Serve until unmounted
+	server.Wait()
 }

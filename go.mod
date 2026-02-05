@@ -11,6 +11,7 @@ require (
 require (
 	github.com/creack/pty v1.1.24 // indirect
 	github.com/google/btree v1.1.2 // indirect
+	github.com/hanwen/go-fuse/v2 v2.9.0 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	golang.org/x/exp v0.0.0-20231110203233-9a3e6036ecaa // indirect
 	golang.org/x/sys v0.40.0 // indirect

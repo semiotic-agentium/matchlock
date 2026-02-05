@@ -639,7 +639,11 @@ func createVM(ctx context.Context, config *api.Config) (*sandboxVM, error) {
 		caInjector = sandboxnet.NewCAInjector(proxy.CAPool())
 		// Write CA cert to workspace for guest access
 		if mp, ok := vfsProviders["/workspace"].(*vfs.MemoryProvider); ok {
-			mp.WriteFile("/.sandbox-ca.crt", caInjector.CACertPEM(), 0644)
+			if err := mp.WriteFile("/.sandbox-ca.crt", caInjector.CACertPEM(), 0644); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to write CA cert: %v\n", err)
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "Warning: /workspace is not a MemoryProvider, CA cert not written\n")
 		}
 	}
 

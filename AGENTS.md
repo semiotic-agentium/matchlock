@@ -44,8 +44,6 @@ matchlock/
 │   └── fused/            # Guest FUSE daemon resources
 ├── sdk/
 │   └── python/           # Python SDK
-├── docs/
-│   └── adr/              # Architecture Decision Records
 ├── examples/
 │   ├── go/               # Go usage examples
 │   └── python/           # Python usage examples

@@ -80,6 +80,10 @@ go tool cover -html=coverage.out -o coverage.html
 echo "Coverage report: coverage.html"
 """
 
+[tasks.bench]
+description = "Run benchmarks"
+run = "go test -bench=. -benchmem -benchtime=2s -count=1 -run=^$ ./pkg/net/"
+
 # =============================================================================
 # Development tasks
 # =============================================================================

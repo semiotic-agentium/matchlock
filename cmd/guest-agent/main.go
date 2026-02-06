@@ -1,3 +1,5 @@
+//go:build linux
+
 // Guest agent runs inside the Firecracker VM and handles:
 // 1. Command execution requests from the host
 // 2. Ready signal to indicate VM is ready

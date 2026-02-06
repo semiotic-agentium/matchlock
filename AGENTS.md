@@ -6,7 +6,7 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 
 - **Language**: Go 1.25
 - **VM Backend**: Firecracker micro-VMs (Linux), Virtualization.framework (macOS/Apple Silicon)
-- **Network**: nftables transparent proxy (Linux), gVisor tcpip userspace TCP/IP stack (macOS), HTTP/TLS MITM
+- **Network**: nftables transparent proxy (Linux), Apple native NAT or gVisor userspace TCP/IP stack (macOS), HTTP/TLS MITM
 - **Filesystem**: Pluggable VFS providers (Memory, RealFS, Readonly, Overlay)
 - **Communication**: Vsock for host-guest, JSON-RPC 2.0 for API
 
@@ -26,7 +26,7 @@ matchlock/
 │   ├── net/              # Network stack (TAP, HTTP/TLS MITM, CA injection)
 │   ├── policy/           # Policy engine (allowlists, secrets)
 │   ├── rpc/              # JSON-RPC handler
-│   ├── sandbox/          # Core sandbox management
+│   ├── sandbox/          # Core sandbox management + exec relay
 │   ├── sdk/              # Go SDK for programmatic sandbox usage
 │   ├── state/            # VM state management
 │   ├── vfs/              # Virtual filesystem providers and server
@@ -53,50 +53,36 @@ matchlock/
 └── bin/                  # Built binaries
 ```
 
-## Build Commands
+## Build & Development
 
-This project uses [mise](https://mise.jdx.dev/) for task management and dev dependencies.
+This project uses [mise](https://mise.jdx.dev/) for task management and dev dependencies. Run `mise tasks` to list all available tasks.
 
 ```bash
-# Install mise (if not already installed)
-# See https://mise.jdx.dev/getting-started.html
-
-# Install dev dependencies (Go, golangci-lint, crane)
-mise install
-
-# List all available tasks
-mise tasks
-
-# Build CLI binary
-mise run build
-
-# Build CLI and guest binaries
-mise run build:all
-
-# Run tests
-mise run test
-
-# Run all checks (fmt, vet, lint, test)
-mise run check
-
-# Format code
-mise run fmt
-
-# Build kernels (x86_64 + arm64)
-mise run kernel:build
-
-# Publish kernels to GHCR
-mise run kernel:publish
+mise install         # Install dev dependencies (Go, golangci-lint, crane)
+mise run build       # Build CLI binary
+mise run build:all   # Build CLI + guest binaries
+mise run test        # Run tests
+mise run check       # Run all checks (fmt, vet, lint, test)
+mise run fmt         # Format code
 ```
+
+**macOS (Apple Silicon):**
+```bash
+mise run darwin:setup   # Build + codesign CLI + ARM64 guest binaries
+```
+
+**Linux:**
+```bash
+mise run setup          # Full setup (firecracker + images + install)
+# Or step by step:
+sudo ./bin/matchlock setup linux   # Configure Firecracker, KVM, capabilities, nftables
+```
+
+**Kernels** are auto-downloaded from GHCR on first run. Override with `MATCHLOCK_KERNEL=/path/to/kernel`.
 
 ## CLI Usage
 
 ```bash
-# Build rootfs from container image (pre-build for faster startup)
-matchlock build alpine:latest
-matchlock build python:3.12-alpine
-matchlock build ubuntu:22.04
-
 # Run with container image (--image is required)
 matchlock run --image alpine:latest cat /etc/os-release
 matchlock run --image python:3.12-alpine python3 --version
@@ -114,13 +100,9 @@ matchlock exec vm-abc12345 -it sh
 
 # Interactive mode (like docker -it)
 matchlock run --image alpine:latest -it sh
-matchlock run --image python:3.12-alpine -it python3
 
 # With network allowlist
 matchlock run --image python:3.12-alpine --allow-host "api.openai.com" python agent.py
-
-# HTTPS with automatic CA injection
-matchlock run --image alpine:latest --allow-host "httpbin.org" curl https://httpbin.org/get
 
 # With secrets (MITM proxy replaces placeholder with real value)
 export ANTHROPIC_API_KEY=sk-xxx
@@ -128,14 +110,15 @@ matchlock run --image python:3.12-alpine \
   --secret ANTHROPIC_API_KEY@api.anthropic.com \
   python call_api.py
 
-# Inline secret value
-matchlock run --image python:3.12-alpine --secret "API_KEY=sk-xxx@api.example.com" python script.py
+# Lifecycle management
+matchlock list                     # List sandboxes
+matchlock kill vm-abc123           # Kill a sandbox
+matchlock kill --all               # Kill all running sandboxes
+matchlock rm vm-abc123             # Remove stopped sandbox state
+matchlock prune                    # Remove all stopped/crashed state
 
-# List sandboxes
-matchlock list
-
-# Kill a sandbox
-matchlock kill vm-abc123
+# Pre-build rootfs (caches for faster startup)
+matchlock build alpine:latest
 
 # RPC mode (for programmatic access)
 matchlock --rpc
@@ -156,6 +139,7 @@ matchlock --rpc
 - Two network modes: native NAT (no interception) or Unix socket pairs (passed to gVisor userspace TCP/IP stack for interception)
 - Native virtio-vsock for host-guest communication
 - Same guest agent protocol as Linux (full feature parity)
+- NAT mode selected by default; interception mode activated when `--allow-host` or `--secret` flags are used
 
 ### Guest Agent (`cmd/guest-agent`)
 - Runs inside VM to handle exec requests
@@ -175,6 +159,12 @@ matchlock --rpc
 - Creates minimal init script that runs as PID 1
 - Caches built images by digest in `~/.cache/matchlock/images/`
 - Supports any Linux container image (Alpine, Ubuntu, Debian, etc.)
+
+### Exec Relay (`pkg/sandbox/exec_relay.go`)
+- Unix socket server (`~/.matchlock/vms/{id}/exec.sock`) enabling cross-process exec
+- The `run --rm=false` host process serves the relay; `matchlock exec` connects to it
+- Supports both non-interactive and interactive (TTY) exec
+- Works cross-platform (Linux + macOS) without direct vsock access from external processes
 
 ### Policy Engine (`pkg/policy`)
 - Host allowlisting with glob patterns
@@ -197,11 +187,9 @@ matchlock --rpc
 - NAT masquerade auto-detects default interface
 - Kernel handles TCP/IP; only HTTP/HTTPS traffic goes through userspace
 
-**macOS:**
-- `NetworkStack`: gVisor userspace TCP/IP stack with `socketPairEndpoint` reading raw Ethernet frames from Unix socket pair
-- Promiscuous + spoofing mode lets gVisor act as transparent gateway
-- TCP/UDP forwarders intercept all connections at L4
-- Falls back to Apple native NAT when no interception is needed
+**macOS (two modes):**
+- **NAT mode** (default): Uses Apple Virtualization.framework's built-in NAT with DHCP — no traffic interception, simplest path for unrestricted networking
+- **Interception mode** (when `--allow-host` or `--secret` is used): Unix socket pairs pass raw Ethernet frames to gVisor userspace TCP/IP stack (`socketPairEndpoint`); promiscuous + spoofing mode lets gVisor act as transparent gateway with TCP/UDP forwarders intercepting all connections at L4
 
 **Shared:**
 - `HTTPInterceptor`: HTTP interception with Host header-based policy checking
@@ -246,10 +234,6 @@ Firecracker exposes vsock via Unix domain sockets with two connection patterns:
 
 **Important**: The `{uds_path}_{port}` sockets are only for guest-initiated connections. Host-initiated connections must use the CONNECT protocol on the base socket.
 
-## Environment Variables
-
-- `MATCHLOCK_KERNEL`: Path to kernel image (optional, auto-downloaded if not set)
-
 ## JSON-RPC Methods
 
 - `create`: Initialize VM with configuration
@@ -272,67 +256,13 @@ CURL_CA_BUNDLE=/etc/ssl/certs/matchlock-ca.crt
 NODE_EXTRA_CA_CERTS=/etc/ssl/certs/matchlock-ca.crt
 ```
 
-No manual setup required - HTTPS interception works out of the box.
+## Kernel
 
-## Building Images
-
-### Kernel
-
-Kernels are automatically downloaded from GHCR on first run. No manual setup required.
-
-**Automatic Download (recommended):**
-```bash
-# Kernel is auto-downloaded when you run matchlock
-matchlock run --image alpine:latest echo hello
-
-# Kernels are cached at ~/.cache/matchlock/kernels/{version}/
-# x86_64: kernel
-# arm64:  kernel-arm64
-```
-
-**Manual Override:**
-```bash
-# Use environment variable to specify custom kernel
-MATCHLOCK_KERNEL=/path/to/kernel matchlock run ...
-```
-
-**Building Kernels Locally:**
-
-The kernel build uses a multi-stage Dockerfile (`guest/kernel/Dockerfile`) with Docker BuildKit for
-idempotent, layer-cached builds. The base layer (Ubuntu 22.04 toolchain + kernel source download) is
-shared between architectures. Kernel configs are standalone files (`guest/kernel/{x86_64,arm64}.config`)
-so changing one arch config doesn't invalidate the other's build cache.
-
-```bash
-# Build both architectures (default)
-./scripts/build-kernel.sh
-
-# Build specific architecture
-ARCH=x86_64 ./scripts/build-kernel.sh
-ARCH=arm64 ./scripts/build-kernel.sh
-
-# Custom version
-KERNEL_VERSION=6.1.140 ./scripts/build-kernel.sh
-```
-
-Output: `~/.cache/matchlock/kernels/{version}/kernel[-arm64]`
-
-**Publishing Kernels to GHCR:**
-
-```bash
-# Build and publish (requires GHCR authentication)
-./scripts/build-kernel.sh
-./scripts/publish-kernel.sh
-
-# With custom version
-KERNEL_VERSION=6.1.140 TAG_LATEST=true ./scripts/publish-kernel.sh
-```
-
-**Kernel Distribution (pkg/kernel):**
 - Version: `6.1.137` (constant in `pkg/kernel/kernel.go`)
 - Registry: `ghcr.io/jingkaihe/matchlock/kernel:{version}`
 - Multi-platform manifest with x86_64 and arm64 variants
-- Pulled using go-containerregistry with platform selection
+- Build: `mise run kernel:build` (uses Docker BuildKit, configs in `guest/kernel/{x86_64,arm64}.config`)
+- Publish: `mise run kernel:publish`
 
 Required kernel options for Firecracker v1.8+:
 - `CONFIG_ACPI=y` and `CONFIG_PCI=y` - Required for virtio device initialization
@@ -342,137 +272,14 @@ Required kernel options for Firecracker v1.8+:
 - `CONFIG_IP_PNP=y` - Required for kernel `ip=` boot parameter (network configuration)
 - `CONFIG_CGROUPS=y` - Cgroup support (v1 and v2) with cpu, memory, pids, io, cpuset, freezer controllers
 
-## Linux Setup
-
-### Quick Setup
-
-Run the built-in setup command (requires root):
-
-```bash
-# Build the CLI first
-mise run build
-
-# Run setup (installs Firecracker, configures permissions and network)
-sudo ./bin/matchlock setup linux
-```
-
-### What it configures
-
-1. **Firecracker** - Downloads and installs the latest Firecracker binary
-2. **KVM access** - Adds your user to the `kvm` group
-3. **Capabilities** - Sets `CAP_NET_ADMIN` and `CAP_NET_RAW` (+ep) on the matchlock binary
-4. **TUN device** - Ensures `/dev/net/tun` is accessible (group-owned, mode 0660)
-5. **IP forwarding** - Enables `net.ipv4.ip_forward` via `/etc/sysctl.d/99-matchlock.conf`
-6. **nftables** - Ensures the nf_tables kernel module is loaded
-
-### Running without sudo
-
-After running `matchlock setup linux`, matchlock can run without sudo because:
-- The binary has `CAP_NET_ADMIN` capability for creating TAP interfaces and nftables rules
-- nftables rules are created/destroyed per-VM at runtime using netlink (no external binary needed)
-- IP forwarding is already enabled system-wide
-
-### Setup Options
-
-```bash
-# Skip specific setup steps
-sudo matchlock setup linux --skip-firecracker
-sudo matchlock setup linux --skip-permissions
-sudo matchlock setup linux --skip-network
-
-# Custom install directory for Firecracker
-sudo matchlock setup linux --install-dir /opt/bin
-
-# Specify user (default: SUDO_USER or current user)
-sudo matchlock setup linux --user myuser
-
-# Specify binary path for capability setup
-sudo matchlock setup linux --binary /usr/local/bin/matchlock
-```
-
-After setup, log out and back in for group changes to take effect.
-
-## macOS Setup (Apple Silicon)
-
-### Prerequisites
-- macOS 11+ (Big Sur or later) on Apple Silicon
-- Go 1.25+ with CGO enabled
-- Code signing with virtualization entitlement
-- e2fsprogs (for `--image` option to build rootfs from container images)
-
-```bash
-# Install e2fsprogs for ext4 filesystem creation
-brew install e2fsprogs
-brew link e2fsprogs  # Makes mke2fs and debugfs available in PATH
-```
-
-### Build & Sign CLI
-
-```bash
-# Build CLI
-go build -o bin/matchlock ./cmd/matchlock
-
-# Build guest binaries for ARM64 Linux
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ~/.cache/matchlock/guest-agent ./cmd/guest-agent
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -o ~/.cache/matchlock/guest-fused ./cmd/guest-fused
-
-# Sign with virtualization entitlement (required!)
-cat > matchlock.entitlements << 'EOF'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>com.apple.security.virtualization</key>
-    <true/>
-</dict>
-</plist>
-EOF
-codesign --entitlements matchlock.entitlements -f -s - bin/matchlock
-```
-
-### Kernel & Rootfs
-
-The macOS backend requires:
-1. **ARM64 Linux kernel** - Automatically downloaded from GHCR on first run
-2. **ext4 rootfs** - Built from container image via `--image` option
-
-Kernels are auto-downloaded to `~/.cache/matchlock/kernels/{version}/kernel-arm64`.
-
-With e2fsprogs installed, use `--image` to automatically pull and build rootfs from any container image:
-
-```bash
-# Run with container image - automatically pulls linux/arm64 variant
-matchlock run --image alpine:latest echo hello
-matchlock run --image python:3.12-alpine python3 --version
-matchlock run --image ubuntu:24.04 cat /etc/os-release
-```
-
-### Usage
-
-```bash
-# Run with container image (--image is required)
-matchlock run --image alpine:latest echo 'Hello from macOS VM!'
-
-# Interactive shell
-matchlock run --image alpine:latest -it sh
-```
-
-### macOS-Specific Notes
-- Uses Apple Virtualization.framework via `github.com/Code-Hex/vz/v3`
-- Native virtio-vsock (no Unix socket CONNECT protocol like Firecracker)
-- Network uses NAT mode with DHCP (no traffic interception yet)
-- Image builder uses `mke2fs` and `debugfs` from e2fsprogs to create ext4 without mounting
-
 ## Configuration
 
 ### Workspace Path
 The VFS mount point in the guest is configurable via `VFSConfig.Workspace`. Default is `/workspace`.
 
 ```go
-// Go SDK example with custom workspace
 opts := sdk.CreateOptions{
     Workspace: "/home/user/code",
-    // ...
 }
 ```
 
@@ -485,12 +292,6 @@ type VFSConfig struct {
     Mounts       map[string]MountConfig `json:"mounts,omitempty"`     // VFS provider mounts
 }
 ```
-
-## Notes
-
-- Run `sudo matchlock setup linux` once to configure capabilities (then no sudo needed)
-- Firecracker binary must be installed for VM operation
-- Guest agent and FUSE daemon auto-start via OpenRC
 
 ## Known Limitations
 

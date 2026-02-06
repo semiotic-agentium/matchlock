@@ -6,6 +6,7 @@ package sandbox
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/google/uuid"
@@ -16,7 +17,14 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/vfs"
 	"github.com/jingkaihe/matchlock/pkg/vm"
 	"github.com/jingkaihe/matchlock/pkg/vm/linux"
+	"golang.org/x/sys/unix"
 )
+
+// FirewallRules is an interface for managing firewall rules.
+type FirewallRules interface {
+	Setup() error
+	Cleanup() error
+}
 
 // Sandbox represents a running sandbox VM with all associated resources.
 type Sandbox struct {
@@ -24,7 +32,8 @@ type Sandbox struct {
 	config      *api.Config
 	machine     vm.Machine
 	proxy       *sandboxnet.TransparentProxy
-	iptRules    *sandboxnet.IPTablesRules
+	fwRules     FirewallRules
+	natRules    *sandboxnet.NFTablesNAT
 	policy      *policy.Engine
 	vfsRoot     *vfs.MountRouter
 	vfsServer   *vfs.VFSServer
@@ -36,6 +45,7 @@ type Sandbox struct {
 	subnetInfo  *state.SubnetInfo
 	subnetAlloc *state.SubnetAllocator
 	workspace   string
+	rootfsPath  string
 }
 
 // Options configures sandbox creation.
@@ -63,10 +73,18 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		return nil, fmt.Errorf("failed to register VM state: %w", err)
 	}
 
+	// Create a copy of the rootfs for this VM (copy-on-write if supported)
+	vmRootfsPath := stateMgr.Dir(id) + "/rootfs.ext4"
+	if err := copyRootfs(opts.RootfsPath, vmRootfsPath); err != nil {
+		stateMgr.Unregister(id)
+		return nil, fmt.Errorf("failed to copy rootfs: %w", err)
+	}
+
 	// Allocate unique subnet for this VM
 	subnetAlloc := state.NewSubnetAllocator()
 	subnetInfo, err := subnetAlloc.Allocate(id)
 	if err != nil {
+		os.Remove(vmRootfsPath)
 		stateMgr.Unregister(id)
 		return nil, fmt.Errorf("failed to allocate subnet: %w", err)
 	}
@@ -77,12 +95,11 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	if kernelPath == "" {
 		kernelPath = DefaultKernelPath()
 	}
-	rootfsPath := opts.RootfsPath
 
 	vmConfig := &vm.VMConfig{
 		ID:         id,
 		KernelPath: kernelPath,
-		RootfsPath: rootfsPath,
+		RootfsPath: vmRootfsPath,
 		CPUs:       config.Resources.CPUs,
 		MemoryMB:   config.Resources.MemoryMB,
 		SocketPath: stateMgr.SocketPath(id) + ".sock",
@@ -133,7 +150,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	const httpsPort = 18443
 
 	var proxy *sandboxnet.TransparentProxy
-	var iptRules *sandboxnet.IPTablesRules
+	var fwRules FirewallRules
 
 	needsProxy := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 	if needsProxy {
@@ -153,19 +170,21 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 
 		proxy.Start()
 
-		iptRules = sandboxnet.NewIPTablesRules(linuxMachine.TapName(), gatewayIP, httpPort, httpsPort)
-		if err := iptRules.Setup(); err != nil {
+		fwRules = sandboxnet.NewNFTablesRules(linuxMachine.TapName(), gatewayIP, httpPort, httpsPort)
+		if err := fwRules.Setup(); err != nil {
 			proxy.Close()
 			machine.Close()
 			subnetAlloc.Release(id)
 			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("failed to setup iptables rules: %w", err)
+			return nil, fmt.Errorf("failed to setup firewall rules: %w", err)
 		}
 	}
 
-	// Set up basic NAT for guest network access
-	if err := sandboxnet.SetupNAT(linuxMachine.TapName(), subnetInfo.Subnet); err != nil {
+	// Set up basic NAT for guest network access using nftables
+	natRules := sandboxnet.NewNFTablesNAT(linuxMachine.TapName())
+	if err := natRules.Setup(); err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to setup NAT: %v\n", err)
+		natRules = nil
 	}
 
 	// Create VFS providers
@@ -193,8 +212,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		if proxy != nil {
 			proxy.Close()
 		}
-		if iptRules != nil {
-			iptRules.Cleanup()
+		if fwRules != nil {
+			fwRules.Cleanup()
 		}
 		machine.Close()
 		subnetAlloc.Release(id)
@@ -203,15 +222,12 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	}
 
 	// Set up CA injector if proxy is enabled
+	// Inject CA cert directly into rootfs so it's available regardless of VFS mounts
 	var caInjector *sandboxnet.CAInjector
 	if proxy != nil {
 		caInjector = sandboxnet.NewCAInjector(proxy.CAPool())
-		if mp, ok := vfsProviders[workspace].(*vfs.MemoryProvider); ok {
-			if err := mp.WriteFile("/.sandbox-ca.crt", caInjector.CACertPEM(), 0644); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to write CA cert: %v\n", err)
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "Warning: %s is not a MemoryProvider, CA cert not written\n", workspace)
+		if err := injectFileIntoRootfs(vmRootfsPath, "/etc/ssl/certs/matchlock-ca.crt", caInjector.CACertPEM()); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to inject CA cert into rootfs: %v\n", err)
 		}
 	}
 
@@ -220,7 +236,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		config:      config,
 		machine:     machine,
 		proxy:       proxy,
-		iptRules:    iptRules,
+		fwRules:     fwRules,
+		natRules:    natRules,
 		policy:      policyEngine,
 		vfsRoot:     vfsRoot,
 		vfsServer:   vfsServer,
@@ -232,6 +249,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		subnetInfo:  subnetInfo,
 		subnetAlloc: subnetAlloc,
 		workspace:   workspace,
+		rootfsPath:  vmRootfsPath,
 	}, nil
 }
 
@@ -274,7 +292,7 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 
 	// Inject CA certificate environment variables if proxy is enabled
 	if s.caInjector != nil {
-		certPath := s.workspace + "/.sandbox-ca.crt"
+		certPath := "/etc/ssl/certs/matchlock-ca.crt"
 		opts.Env["SSL_CERT_FILE"] = certPath
 		opts.Env["REQUESTS_CA_BUNDLE"] = certPath
 		opts.Env["CURL_CA_BUNDLE"] = certPath
@@ -358,17 +376,19 @@ func (s *Sandbox) Close() error {
 	if s.vfsStopFunc != nil {
 		s.vfsStopFunc()
 	}
-	if s.iptRules != nil {
-		if err := s.iptRules.Cleanup(); err != nil {
-			errs = append(errs, fmt.Errorf("iptables cleanup: %w", err))
+	if s.fwRules != nil {
+		if err := s.fwRules.Cleanup(); err != nil {
+			errs = append(errs, fmt.Errorf("firewall cleanup: %w", err))
+		}
+	}
+	if s.natRules != nil {
+		if err := s.natRules.Cleanup(); err != nil {
+			errs = append(errs, fmt.Errorf("NAT cleanup: %w", err))
 		}
 	}
 	if s.proxy != nil {
 		s.proxy.Close()
 	}
-
-	// Clean up NAT forwarding rules
-	sandboxnet.CleanupNAT(s.tapName)
 
 	// Release subnet allocation
 	if s.subnetAlloc != nil {
@@ -380,6 +400,10 @@ func (s *Sandbox) Close() error {
 	if err := s.machine.Close(); err != nil {
 		errs = append(errs, fmt.Errorf("machine close: %w", err))
 	}
+
+	// Remove rootfs copy to save disk space
+	rootfsCopy := s.stateMgr.Dir(s.id) + "/rootfs.ext4"
+	os.Remove(rootfsCopy)
 
 	if len(errs) > 0 {
 		fmt.Fprintf(os.Stderr, "Warning: cleanup errors: %v\n", errs)
@@ -415,3 +439,35 @@ func createProvider(mount api.MountConfig) vfs.Provider {
 		return vfs.NewMemoryProvider()
 	}
 }
+
+func copyRootfs(src, dst string) error {
+	srcFile, err := os.Open(src)
+	if err != nil {
+		return fmt.Errorf("open source: %w", err)
+	}
+	defer srcFile.Close()
+
+	dstFile, err := os.Create(dst)
+	if err != nil {
+		return fmt.Errorf("create dest: %w", err)
+	}
+	defer dstFile.Close()
+
+	// Try copy-on-write clone first (FICLONE ioctl)
+	// Works on btrfs, xfs (with reflink), bcachefs, etc.
+	err = unix.IoctlFileClone(int(dstFile.Fd()), int(srcFile.Fd()))
+	if err == nil {
+		return nil
+	}
+
+	// Fall back to regular copy
+	fmt.Fprintf(os.Stderr, "Note: copy-on-write not supported (%v), using regular copy\n", err)
+	if _, err := io.Copy(dstFile, srcFile); err != nil {
+		os.Remove(dst)
+		return fmt.Errorf("copy: %w", err)
+	}
+
+	return nil
+}
+
+

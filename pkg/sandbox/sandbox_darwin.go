@@ -212,12 +212,9 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 			return nil, fmt.Errorf("failed to create CA pool: %w", err)
 		}
 		caInjector = sandboxnet.NewCAInjector(caPool)
-		if mp, ok := vfsProviders[workspace].(*vfs.MemoryProvider); ok {
-			if err := mp.WriteFile("/.sandbox-ca.crt", caInjector.CACertPEM(), 0644); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to write CA cert: %v\n", err)
-			}
-		} else {
-			fmt.Fprintf(os.Stderr, "Warning: %s is not a MemoryProvider, CA cert not written\n", workspace)
+		// Inject CA cert directly into rootfs so it's available regardless of VFS mounts
+		if err := injectFileIntoRootfs(machine.RootfsPath(), "/etc/ssl/certs/matchlock-ca.crt", caInjector.CACertPEM()); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to inject CA cert into rootfs: %v\n", err)
 		}
 	}
 
@@ -263,7 +260,7 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 	}
 
 	if s.caInjector != nil {
-		certPath := s.workspace + "/.sandbox-ca.crt"
+		certPath := "/etc/ssl/certs/matchlock-ca.crt"
 		opts.Env["SSL_CERT_FILE"] = certPath
 		opts.Env["REQUESTS_CA_BUNDLE"] = certPath
 		opts.Env["CURL_CA_BUNDLE"] = certPath

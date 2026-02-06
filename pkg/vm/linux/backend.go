@@ -130,7 +130,7 @@ func (m *LinuxMachine) Start(ctx context.Context) error {
 
 	// Give Firecracker a moment to open the TAP device, then configure it
 	time.Sleep(100 * time.Millisecond)
-	
+
 	// Re-configure the TAP interface (Firecracker resets it when opening)
 	// Use configured subnet or default
 	subnetCIDR := m.config.SubnetCIDR
@@ -624,8 +624,6 @@ func sendVsockMessage(conn net.Conn, msgType uint8, data []byte) error {
 	return nil
 }
 
-
-
 func (m *LinuxMachine) NetworkFD() (int, error) {
 	return m.tapFD, nil
 }
@@ -651,6 +649,10 @@ func (m *LinuxMachine) TapName() string {
 
 func (m *LinuxMachine) PID() int {
 	return m.pid
+}
+
+func (m *LinuxMachine) RootfsPath() string {
+	return m.config.RootfsPath
 }
 
 func (m *LinuxMachine) Close() error {

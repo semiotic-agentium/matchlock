@@ -20,12 +20,14 @@ type Builder struct {
 	cacheDir       string
 	guestAgentPath string
 	guestFusedPath string
+	forcePull      bool
 }
 
 type BuildOptions struct {
 	CacheDir       string
 	GuestAgentPath string
 	GuestFusedPath string
+	ForcePull      bool
 }
 
 func NewBuilder(opts *BuildOptions) *Builder {
@@ -38,6 +40,7 @@ func NewBuilder(opts *BuildOptions) *Builder {
 		cacheDir:       cacheDir,
 		guestAgentPath: opts.GuestAgentPath,
 		guestFusedPath: opts.GuestFusedPath,
+		forcePull:      opts.ForcePull,
 	}
 }
 
@@ -54,7 +57,26 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 		return nil, fmt.Errorf("parse image reference: %w", err)
 	}
 
-	// Get platform-specific options (darwin needs explicit arm64)
+	// Check for existing cached rootfs before contacting registry
+	cacheDir := filepath.Join(b.cacheDir, sanitizeRef(imageRef))
+	if !b.forcePull {
+		if entries, err := os.ReadDir(cacheDir); err == nil {
+			for _, e := range entries {
+				if filepath.Ext(e.Name()) == ".ext4" {
+					rootfsPath := filepath.Join(cacheDir, e.Name())
+					fi, _ := os.Stat(rootfsPath)
+					return &BuildResult{
+						RootfsPath: rootfsPath,
+						Digest:     strings.TrimSuffix(e.Name(), ".ext4"),
+						Size:       fi.Size(),
+						Cached:     true,
+					}, nil
+				}
+			}
+		}
+	}
+
+	// Pull from registry
 	remoteOpts := []remote.Option{
 		remote.WithAuthFromKeychain(authn.DefaultKeychain),
 		remote.WithContext(ctx),
@@ -71,17 +93,7 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 		return nil, fmt.Errorf("get image digest: %w", err)
 	}
 
-	rootfsPath := filepath.Join(b.cacheDir, sanitizeRef(imageRef), digest.Hex[:12]+".ext4")
-
-	if _, err := os.Stat(rootfsPath); err == nil {
-		fi, _ := os.Stat(rootfsPath)
-		return &BuildResult{
-			RootfsPath: rootfsPath,
-			Digest:     digest.String(),
-			Size:       fi.Size(),
-			Cached:     true,
-		}, nil
-	}
+	rootfsPath := filepath.Join(cacheDir, digest.Hex[:12]+".ext4")
 
 	if err := os.MkdirAll(filepath.Dir(rootfsPath), 0755); err != nil {
 		return nil, fmt.Errorf("create cache dir: %w", err)
@@ -207,19 +219,16 @@ fi
 WORKSPACE=$(cat /proc/cmdline | tr ' ' '\n' | grep 'matchlock.workspace=' | cut -d= -f2)
 [ -z "$WORKSPACE" ] && WORKSPACE="/workspace"
 
-# Wait for VFS mount and inject CA cert if present (only exists when proxy is enabled)
+# Wait for VFS mount before starting agent
 for i in $(seq 1 50); do
-    if [ -f "$WORKSPACE/.sandbox-ca.crt" ]; then
-        mkdir -p /etc/ssl/certs
-        cat "$WORKSPACE/.sandbox-ca.crt" >> /etc/ssl/certs/ca-certificates.crt 2>/dev/null
-        break
-    fi
-    # Check if workspace is mounted but CA doesn't exist (no proxy)
     if mount | grep -q "$WORKSPACE"; then
         break
     fi
     sleep 0.1
 done
+
+# CA cert is injected directly into rootfs at /etc/ssl/certs/matchlock-ca.crt
+# No VFS-based injection needed
 
 exec /opt/matchlock/guest-agent
 `

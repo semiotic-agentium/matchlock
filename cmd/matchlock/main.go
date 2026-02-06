@@ -40,6 +40,8 @@ var rootCmd = &cobra.Command{
 	Short: "A lightweight micro-VM sandbox for running llm agent securely",
 	Long: `Matchlock is a lightweight micro-VM sandbox for running llm agent
 securely with network interception and secret protection.`,
+	SilenceUsage:  true,
+	SilenceErrors: true,
 }
 
 var runCmd = &cobra.Command{
@@ -202,6 +204,7 @@ func init() {
 
 func main() {
 	if err := rootCmd.Execute(); err != nil {
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }

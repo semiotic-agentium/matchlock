@@ -8,6 +8,171 @@ import (
 	"strings"
 )
 
+const initScript = `#!/bin/sh
+# Matchlock minimal init - runs as PID 1
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# Remount root read-write (may be mounted ro by initramfs)
+mount -o remount,rw / 2>/dev/null || true
+
+mount -t proc proc /proc 2>/dev/null || true
+mount -t sysfs sys /sys 2>/dev/null || true
+mount -t devtmpfs dev /dev 2>/dev/null || true
+
+mkdir -p /dev/pts /dev/shm
+mount -t devpts devpts /dev/pts 2>/dev/null || true
+mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
+mount -t tmpfs tmpfs /run 2>/dev/null || true
+mount -t tmpfs tmpfs /tmp 2>/dev/null || true
+
+# Mount cgroup2 unified hierarchy
+mkdir -p /sys/fs/cgroup
+mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
+
+hostname matchlock
+
+# Network setup - bring up interface and get IP via DHCP
+ip link set eth0 up 2>/dev/null || ifconfig eth0 up 2>/dev/null
+
+# Try DHCP if kernel didn't configure IP (NAT mode)
+if ! ip addr show eth0 2>/dev/null | grep -q "inet "; then
+    # Alpine/busybox udhcpc
+    if command -v udhcpc >/dev/null 2>&1; then
+        udhcpc -i eth0 -n -q 2>/dev/null &
+    # Debian/Ubuntu dhclient
+    elif command -v dhclient >/dev/null 2>&1; then
+        dhclient eth0 2>/dev/null &
+    fi
+    sleep 2
+fi
+
+# Start FUSE daemon for VFS
+/opt/matchlock/guest-fused &
+
+# Get workspace path from kernel cmdline
+WORKSPACE=$(cat /proc/cmdline | tr ' ' '\n' | grep 'matchlock.workspace=' | cut -d= -f2)
+[ -z "$WORKSPACE" ] && WORKSPACE="/workspace"
+
+# Wait for VFS mount before starting agent
+for i in $(seq 1 50); do
+    if mount | grep -q "$WORKSPACE"; then
+        break
+    fi
+    sleep 0.1
+done
+
+# CA cert is injected directly into rootfs at /etc/ssl/certs/matchlock-ca.crt
+# No VFS-based injection needed
+
+exec /opt/matchlock/guest-agent
+`
+
+const resolvConfContent = "nameserver 8.8.8.8\nnameserver 8.8.4.4\n"
+
+// prepareRootfs injects matchlock components into an ext4 rootfs image using debugfs.
+// This includes the guest-agent binary, guest-fused binary, init scripts, and DNS config.
+// It also optionally resizes the rootfs if diskSizeMB > 0.
+func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
+	guestAgentPath := DefaultGuestAgentPath()
+	guestFusedPath := DefaultGuestFusedPath()
+
+	if _, err := os.Stat(guestAgentPath); err != nil {
+		return fmt.Errorf("guest-agent not found at %s: %w", guestAgentPath, err)
+	}
+	if _, err := os.Stat(guestFusedPath); err != nil {
+		return fmt.Errorf("guest-fused not found at %s: %w", guestFusedPath, err)
+	}
+
+	// Write init script and resolv.conf to temp files for debugfs injection
+	initTmp, err := os.CreateTemp("", "matchlock-init-*")
+	if err != nil {
+		return fmt.Errorf("create init temp: %w", err)
+	}
+	defer os.Remove(initTmp.Name())
+	if _, err := initTmp.WriteString(initScript); err != nil {
+		initTmp.Close()
+		return fmt.Errorf("write init temp: %w", err)
+	}
+	initTmp.Close()
+
+	resolvTmp, err := os.CreateTemp("", "matchlock-resolv-*")
+	if err != nil {
+		return fmt.Errorf("create resolv temp: %w", err)
+	}
+	defer os.Remove(resolvTmp.Name())
+	if _, err := resolvTmp.WriteString(resolvConfContent); err != nil {
+		resolvTmp.Close()
+		return fmt.Errorf("write resolv temp: %w", err)
+	}
+	resolvTmp.Close()
+
+	// Build debugfs commands to inject all components
+	var commands []string
+
+	// Create required directories
+	for _, dir := range []string{
+		"/opt",
+		"/opt/matchlock",
+		"/sbin",
+		"/run",
+		"/proc",
+		"/sys",
+		"/dev",
+		"/workspace",
+		"/etc",
+		"/etc/ssl",
+		"/etc/ssl/certs",
+	} {
+		commands = append(commands, fmt.Sprintf("mkdir %s", dir))
+	}
+
+	// Inject guest binaries
+	commands = append(commands, fmt.Sprintf("write %s /opt/matchlock/guest-agent", guestAgentPath))
+	commands = append(commands, fmt.Sprintf("write %s /opt/matchlock/guest-fused", guestFusedPath))
+
+	// Inject init scripts (three locations for compatibility)
+	commands = append(commands, fmt.Sprintf("write %s /sbin/matchlock-init", initTmp.Name()))
+	commands = append(commands, fmt.Sprintf("write %s /init", initTmp.Name()))
+	commands = append(commands, fmt.Sprintf("write %s /sbin/init", initTmp.Name()))
+
+	// Inject DNS config
+	commands = append(commands, fmt.Sprintf("write %s /etc/resolv.conf", resolvTmp.Name()))
+
+	cmdStr := strings.Join(commands, "\n")
+	cmd := exec.Command("debugfs", "-w", rootfsPath)
+	cmd.Stdin = strings.NewReader(cmdStr)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("debugfs inject components: %w: %s", err, output)
+	}
+
+	// Set executable permissions on injected binaries and init scripts via debugfs
+	var chmodCommands []string
+	for _, path := range []string{
+		"/opt/matchlock/guest-agent",
+		"/opt/matchlock/guest-fused",
+		"/sbin/matchlock-init",
+		"/init",
+		"/sbin/init",
+	} {
+		chmodCommands = append(chmodCommands, fmt.Sprintf("set_inode_field %s mode 0100755", path))
+	}
+	chmodStr := strings.Join(chmodCommands, "\n")
+	cmd = exec.Command("debugfs", "-w", rootfsPath)
+	cmd.Stdin = strings.NewReader(chmodStr)
+	if output, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("debugfs set permissions: %w: %s", err, output)
+	}
+
+	// Resize if requested
+	if diskSizeMB > 0 {
+		if err := resizeRootfs(rootfsPath, diskSizeMB); err != nil {
+			return fmt.Errorf("resize rootfs: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // resizeRootfs expands an ext4 image to the given size in MB.
 // Uses truncate to expand the sparse file and resize2fs to grow the filesystem.
 // If the image is already larger than sizeMB, this is a no-op.
@@ -55,7 +220,6 @@ func resizeRootfs(rootfsPath string, sizeMB int64) error {
 // This allows injecting files (like CA certs) without mounting the filesystem.
 // Requires debugfs to be installed (part of e2fsprogs).
 func injectFileIntoRootfs(rootfsPath, guestPath string, content []byte) error {
-	// Create a temp file with the content
 	tmpFile, err := os.CreateTemp("", "inject-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
@@ -69,24 +233,19 @@ func injectFileIntoRootfs(rootfsPath, guestPath string, content []byte) error {
 	}
 	tmpFile.Close()
 
-	// Build debugfs commands: create parent directories, then write file
-	// debugfs doesn't have mkdir -p, so we create each directory level
 	var commands []string
 	dir := filepath.Dir(guestPath)
 	if dir != "/" && dir != "." {
-		// Build list of directories to create (from root to parent)
 		var dirs []string
 		for d := dir; d != "/" && d != "."; d = filepath.Dir(d) {
 			dirs = append([]string{d}, dirs...)
 		}
 		for _, d := range dirs {
-			// mkdir will fail silently if dir exists, which is fine
 			commands = append(commands, fmt.Sprintf("mkdir %s", d))
 		}
 	}
 	commands = append(commands, fmt.Sprintf("write %s %s", tmpPath, guestPath))
 
-	// Run all commands in one debugfs session
 	cmdStr := strings.Join(commands, "\n")
 	cmd := exec.Command("debugfs", "-w", rootfsPath)
 	cmd.Stdin = strings.NewReader(cmdStr)

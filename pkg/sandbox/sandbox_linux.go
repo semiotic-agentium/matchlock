@@ -80,12 +80,15 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		return nil, fmt.Errorf("failed to copy rootfs: %w", err)
 	}
 
-	if config.Resources != nil && config.Resources.DiskSizeMB > 0 {
-		if err := resizeRootfs(vmRootfsPath, int64(config.Resources.DiskSizeMB)); err != nil {
-			os.Remove(vmRootfsPath)
-			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("failed to resize rootfs: %w", err)
-		}
+	// Inject matchlock components (guest-agent, guest-fused, init, DNS) and resize
+	var diskSizeMB int64
+	if config.Resources != nil {
+		diskSizeMB = int64(config.Resources.DiskSizeMB)
+	}
+	if err := prepareRootfs(vmRootfsPath, diskSizeMB); err != nil {
+		os.Remove(vmRootfsPath)
+		stateMgr.Unregister(id)
+		return nil, fmt.Errorf("failed to prepare rootfs: %w", err)
 	}
 
 	// Allocate unique subnet for this VM

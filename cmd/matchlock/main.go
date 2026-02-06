@@ -154,11 +154,7 @@ func init() {
 	viper.BindPFlag("run.interactive", runCmd.Flags().Lookup("interactive"))
 	viper.BindPFlag("run.pull", runCmd.Flags().Lookup("pull"))
 
-	buildCmd.Flags().String("guest-agent", "", "Path to guest-agent binary")
-	buildCmd.Flags().String("guest-fused", "", "Path to guest-fused binary")
 	buildCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
-	viper.BindPFlag("build.guest-agent", buildCmd.Flags().Lookup("guest-agent"))
-	viper.BindPFlag("build.guest-fused", buildCmd.Flags().Lookup("guest-fused"))
 
 	listCmd.Flags().Bool("running", false, "Show only running VMs")
 	viper.BindPFlag("list.running", listCmd.Flags().Lookup("running"))
@@ -226,10 +222,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}()
 
 	builder := image.NewBuilder(&image.BuildOptions{
-		GuestAgentPath: sandbox.DefaultGuestAgentPath(),
-		GuestFusedPath: sandbox.DefaultGuestFusedPath(),
-		ForcePull:      pull,
-		DiskSizeMB:     int64(diskSize),
+		ForcePull: pull,
 	})
 
 	buildResult, err := builder.Build(ctx, imageName)
@@ -320,30 +313,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 func runBuild(cmd *cobra.Command, args []string) error {
 	imageRef := args[0]
-	guestAgent, _ := cmd.Flags().GetString("guest-agent")
-	guestFused, _ := cmd.Flags().GetString("guest-fused")
 	pull, _ := cmd.Flags().GetBool("pull")
 
-	agentPath := guestAgent
-	if agentPath == "" {
-		agentPath = sandbox.DefaultGuestAgentPath()
-	}
-	fusedPath := guestFused
-	if fusedPath == "" {
-		fusedPath = sandbox.DefaultGuestFusedPath()
-	}
-
-	if _, err := os.Stat(agentPath); err != nil {
-		return fmt.Errorf("guest-agent not found at %s\nBuild with: CGO_ENABLED=0 go build -o bin/guest-agent ./cmd/guest-agent", agentPath)
-	}
-	if _, err := os.Stat(fusedPath); err != nil {
-		return fmt.Errorf("guest-fused not found at %s\nBuild with: CGO_ENABLED=0 go build -o bin/guest-fused ./cmd/guest-fused", fusedPath)
-	}
-
 	builder := image.NewBuilder(&image.BuildOptions{
-		GuestAgentPath: agentPath,
-		GuestFusedPath: fusedPath,
-		ForcePull:      pull,
+		ForcePull: pull,
 	})
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
@@ -552,11 +525,7 @@ func runRPC(cmd *cobra.Command, args []string) error {
 			return nil, fmt.Errorf("image is required")
 		}
 
-		builder := image.NewBuilder(&image.BuildOptions{
-			GuestAgentPath: sandbox.DefaultGuestAgentPath(),
-			GuestFusedPath: sandbox.DefaultGuestFusedPath(),
-			DiskSizeMB:     int64(config.Resources.DiskSizeMB),
-		})
+		builder := image.NewBuilder(&image.BuildOptions{})
 
 		result, err := builder.Build(ctx, config.Image)
 		if err != nil {

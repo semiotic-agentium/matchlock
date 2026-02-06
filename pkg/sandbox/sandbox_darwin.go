@@ -79,23 +79,23 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	// Determine if we need network interception (calculated before VM creation)
 	needsInterception := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 
-	// Copy rootfs and resize before backend.Create() so the VZ disk attachment
-	// sees the final size
-	var prebuiltRootfs string
-	if config.Resources != nil && config.Resources.DiskSizeMB > 0 {
-		tempRootfs, err := darwin.CopyRootfsToTemp(rootfsPath)
-		if err != nil {
-			subnetAlloc.Release(id)
-			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("failed to copy rootfs: %w", err)
-		}
-		if err := resizeRootfs(tempRootfs, int64(config.Resources.DiskSizeMB)); err != nil {
-			os.Remove(tempRootfs)
-			subnetAlloc.Release(id)
-			stateMgr.Unregister(id)
-			return nil, fmt.Errorf("failed to resize rootfs: %w", err)
-		}
-		prebuiltRootfs = tempRootfs
+	// Copy rootfs, inject matchlock components, and resize before backend.Create()
+	// so the VZ disk attachment sees the final size with all components in place
+	prebuiltRootfs, err := darwin.CopyRootfsToTemp(rootfsPath)
+	if err != nil {
+		subnetAlloc.Release(id)
+		stateMgr.Unregister(id)
+		return nil, fmt.Errorf("failed to copy rootfs: %w", err)
+	}
+	var diskSizeMB int64
+	if config.Resources != nil {
+		diskSizeMB = int64(config.Resources.DiskSizeMB)
+	}
+	if err := prepareRootfs(prebuiltRootfs, diskSizeMB); err != nil {
+		os.Remove(prebuiltRootfs)
+		subnetAlloc.Release(id)
+		stateMgr.Unregister(id)
+		return nil, fmt.Errorf("failed to prepare rootfs: %w", err)
 	}
 
 	vmConfig := &vm.VMConfig{

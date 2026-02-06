@@ -19,15 +19,17 @@ type HTTPInterceptor struct {
 	events    chan api.Event
 	tlsConfig *tls.Config
 	caPool    *CAPool
+	connPool  *upstreamConnPool
 }
 
 func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event) *HTTPInterceptor {
 	caPool, _ := NewCAPool()
 
 	return &HTTPInterceptor{
-		policy: pol,
-		events: events,
-		caPool: caPool,
+		policy:   pol,
+		events:   events,
+		caPool:   caPool,
+		connPool: newUpstreamConnPool(),
 	}
 }
 
@@ -68,27 +70,36 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 
 		targetHost := fmt.Sprintf("%s:%d", host, dstPort)
 
-		realConn, err := net.DialTimeout("tcp", targetHost, 30*time.Second)
-		if err != nil {
-			writeHTTPError(guestConn, http.StatusBadGateway, "Failed to connect")
+		// Try to reuse an existing upstream connection from the pool.
+		pc := i.connPool.get(targetHost)
+		if pc == nil {
+			realConn, err := net.DialTimeout("tcp", targetHost, 30*time.Second)
+			if err != nil {
+				writeHTTPError(guestConn, http.StatusBadGateway, "Failed to connect")
+				return
+			}
+			pc = &pooledConn{
+				conn:   realConn,
+				reader: bufio.NewReader(realConn),
+			}
+		}
+
+		if err := modifiedReq.Write(pc.conn); err != nil {
+			pc.conn.Close()
+			writeHTTPError(guestConn, http.StatusBadGateway, "Failed to write request")
 			return
 		}
 
-		if err := modifiedReq.Write(realConn); err != nil {
-			realConn.Close()
-			return
-		}
-
-		resp, err := http.ReadResponse(bufio.NewReader(realConn), modifiedReq)
+		resp, err := http.ReadResponse(pc.reader, modifiedReq)
 		if err != nil {
-			realConn.Close()
+			pc.conn.Close()
 			return
 		}
 
 		modifiedResp, err := i.policy.OnResponse(resp, modifiedReq, host)
 		if err != nil {
 			resp.Body.Close()
-			realConn.Close()
+			pc.conn.Close()
 			return
 		}
 
@@ -96,7 +107,7 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 			i.emitEvent(modifiedReq, modifiedResp, host, time.Since(start))
 			err := writeResponseHeadersAndStreamBody(guestConn, modifiedResp)
 			resp.Body.Close()
-			realConn.Close()
+			pc.conn.Close()
 			if err != nil {
 				return
 			}
@@ -108,12 +119,18 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 
 		if err := writeResponse(guestConn, modifiedResp); err != nil {
 			resp.Body.Close()
-			realConn.Close()
+			pc.conn.Close()
 			return
 		}
 
 		resp.Body.Close()
-		realConn.Close()
+
+		// Return the connection to the pool if neither side requested close.
+		if modifiedReq.Close || modifiedResp.Close {
+			pc.conn.Close()
+		} else {
+			i.connPool.put(targetHost, pc)
+		}
 
 		if modifiedReq.Close || modifiedResp.Close {
 			return

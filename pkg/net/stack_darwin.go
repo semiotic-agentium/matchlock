@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/policy"
@@ -23,6 +24,19 @@ import (
 	"gvisor.dev/gvisor/pkg/tcpip/transport/tcp"
 	"gvisor.dev/gvisor/pkg/tcpip/transport/udp"
 	"gvisor.dev/gvisor/pkg/waiter"
+)
+
+const (
+	// tcpReceiveWindowSize is the receive window advertised to the guest.
+	// Larger windows improve throughput on high-bandwidth paths.
+	tcpReceiveWindowSize = 4 << 20 // 4MB
+
+	// socketBufSize is the SO_SNDBUF/SO_RCVBUF size for the socket pair.
+	// Larger buffers prevent frame drops under burst traffic between VM and host.
+	socketBufSize = 2 << 20 // 2MB
+
+	// writeBufSize is the capacity of pooled write buffers for outbound packets.
+	writeBufSize = 64 * 1024
 )
 
 type NetworkStack struct {
@@ -45,20 +59,29 @@ type Config struct {
 	Events    chan api.Event
 }
 
+// writeBufPool provides reusable buffers for serializing outbound packets
+// in WritePackets, which can be called from multiple goroutines concurrently.
+var writeBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, writeBufSize)
+		return &b
+	},
+}
+
 // socketPairEndpoint implements stack.LinkEndpoint for Unix socket pairs
 type socketPairEndpoint struct {
-	file          *os.File
-	mtu           uint32
-	linkAddr      tcpip.LinkAddress
-	dispatcher    stack.NetworkDispatcher
-	mu            sync.Mutex
-	closed        bool
-	closeCh       chan struct{}
+	file     *os.File
+	mtu      uint32
+	linkAddr tcpip.LinkAddress
+	// dispatcher is read atomically in the hot path; only written on Attach.
+	dispatcher atomic.Pointer[stack.NetworkDispatcher]
+	closed     atomic.Bool
+	closeCh    chan struct{}
+	mu         sync.Mutex // protects onCloseAction and linkAddr
 	onCloseAction func()
 }
 
 func newSocketPairEndpoint(file *os.File, mtu uint32) *socketPairEndpoint {
-	// Use a fixed MAC address for the gateway endpoint
 	mac := tcpip.LinkAddress([]byte{0x02, 0x00, 0x00, 0x00, 0x00, 0x01})
 	return &socketPairEndpoint{
 		file:     file,
@@ -89,9 +112,7 @@ func (e *socketPairEndpoint) Capabilities() stack.LinkEndpointCapabilities {
 }
 
 func (e *socketPairEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
-	e.mu.Lock()
-	e.dispatcher = dispatcher
-	e.mu.Unlock()
+	e.dispatcher.Store(&dispatcher)
 
 	if dispatcher != nil {
 		go e.readLoop()
@@ -99,9 +120,8 @@ func (e *socketPairEndpoint) Attach(dispatcher stack.NetworkDispatcher) {
 }
 
 func (e *socketPairEndpoint) IsAttached() bool {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.dispatcher != nil
+	d := e.dispatcher.Load()
+	return d != nil && *d != nil
 }
 
 func (e *socketPairEndpoint) Wait() {}
@@ -131,30 +151,32 @@ func (e *socketPairEndpoint) ParseHeader(pkt *stack.PacketBuffer) bool {
 }
 
 func (e *socketPairEndpoint) WritePackets(pkts stack.PacketBufferList) (int, tcpip.Error) {
+	if e.closed.Load() {
+		return 0, &tcpip.ErrClosedForSend{}
+	}
+
+	// Grab a write buffer from the pool; safe for concurrent callers.
+	bp := writeBufPool.Get().(*[]byte)
+	wb := *bp
+
 	var written int
 	for _, pkt := range pkts.AsSlice() {
-		if err := e.writePacket(pkt); err != nil {
-			return written, err
+		views := pkt.AsSlices()
+		wb = wb[:0]
+		for _, v := range views {
+			wb = append(wb, v...)
+		}
+		if _, err := e.file.Write(wb); err != nil {
+			*bp = wb
+			writeBufPool.Put(bp)
+			return written, &tcpip.ErrAborted{}
 		}
 		written++
 	}
+
+	*bp = wb
+	writeBufPool.Put(bp)
 	return written, nil
-}
-
-func (e *socketPairEndpoint) writePacket(pkt *stack.PacketBuffer) tcpip.Error {
-	e.mu.Lock()
-	if e.closed {
-		e.mu.Unlock()
-		return &tcpip.ErrClosedForSend{}
-	}
-	e.mu.Unlock()
-
-	data := pkt.ToView().AsSlice()
-	_, err := e.file.Write(data)
-	if err != nil {
-		return &tcpip.ErrAborted{}
-	}
-	return nil
 }
 
 func (e *socketPairEndpoint) readLoop() {
@@ -168,10 +190,7 @@ func (e *socketPairEndpoint) readLoop() {
 
 		n, err := e.file.Read(buf)
 		if err != nil {
-			e.mu.Lock()
-			closed := e.closed
-			e.mu.Unlock()
-			if closed {
+			if e.closed.Load() {
 				return
 			}
 			continue
@@ -184,9 +203,13 @@ func (e *socketPairEndpoint) readLoop() {
 		eth := header.Ethernet(buf[:n])
 		proto := eth.Type()
 
-		// Copy data since buf is reused
+		// We must allocate per packet because gVisor's TCP stack may hold
+		// the underlying buffer.Buffer chunk in its receive/reassembly queue
+		// long after the PacketBuffer is released. Pooling the byte slice via
+		// OnRelease would cause use-after-free corruption under sustained load.
 		data := make([]byte, n)
 		copy(data, buf[:n])
+
 		pkt := stack.NewPacketBuffer(stack.PacketBufferOptions{
 			Payload: buffer.MakeWithData(data),
 		})
@@ -196,12 +219,9 @@ func (e *socketPairEndpoint) readLoop() {
 			continue
 		}
 
-		e.mu.Lock()
-		dispatcher := e.dispatcher
-		e.mu.Unlock()
-
-		if dispatcher != nil {
-			dispatcher.DeliverNetworkPacket(proto, pkt)
+		dp := e.dispatcher.Load()
+		if dp != nil && *dp != nil {
+			(*dp).DeliverNetworkPacket(proto, pkt)
 		}
 		pkt.DecRef()
 	}
@@ -214,12 +234,11 @@ func (e *socketPairEndpoint) SetOnCloseAction(action func()) {
 }
 
 func (e *socketPairEndpoint) Close() {
-	e.mu.Lock()
-	if e.closed {
-		e.mu.Unlock()
+	if !e.closed.CompareAndSwap(false, true) {
 		return
 	}
-	e.closed = true
+
+	e.mu.Lock()
 	onClose := e.onCloseAction
 	e.mu.Unlock()
 
@@ -236,11 +255,28 @@ func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 		TransportProtocols: []stack.TransportProtocolFactory{tcp.NewProtocol, udp.NewProtocol},
 	})
 
-	// Get file handle
+	// Tune TCP buffer sizes: raise max to allow auto-tuning up to 16MB
+	// for better throughput on high-bandwidth paths.
+	tcpSendBuf := tcpip.TCPSendBufferSizeRangeOption{
+		Min:     tcp.MinBufferSize,          // 4KB
+		Default: tcp.DefaultSendBufferSize,  // 1MB
+		Max:     16 << 20,                   // 16MB
+	}
+	tcpRecvBuf := tcpip.TCPReceiveBufferSizeRangeOption{
+		Min:     tcp.MinBufferSize,             // 4KB
+		Default: tcp.DefaultReceiveBufferSize,  // 1MB
+		Max:     16 << 20,                      // 16MB
+	}
+	s.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpSendBuf)
+	s.SetTransportProtocolOption(tcp.ProtocolNumber, &tcpRecvBuf)
+
 	file := cfg.File
 	if file == nil {
 		file = os.NewFile(uintptr(cfg.FD), "network")
 	}
+
+	// Increase socket pair buffer sizes to prevent frame drops under burst.
+	setSocketBufferSizes(file)
 
 	linkEP := newSocketPairEndpoint(file, cfg.MTU)
 
@@ -274,7 +310,7 @@ func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 
 	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events)
 
-	tcpForwarder := tcp.NewForwarder(s, 0, 65535, ns.handleTCPConnection)
+	tcpForwarder := tcp.NewForwarder(s, tcpReceiveWindowSize, 65535, ns.handleTCPConnection)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)
 
 	udpForwarder := udp.NewForwarder(s, ns.handleUDPPacket)
@@ -301,13 +337,10 @@ func (ns *NetworkStack) handleTCPConnection(r *tcp.ForwarderRequest) {
 
 	switch dstPort {
 	case 80:
-		// HTTP: policy check happens in handler based on Host header
 		go ns.interceptor.HandleHTTP(guestConn, dstIP, int(dstPort))
 	case 443:
-		// HTTPS: policy check happens in handler based on SNI
 		go ns.interceptor.HandleHTTPS(guestConn, dstIP, int(dstPort))
 	default:
-		// Non-HTTP: check policy by IP address
 		host := fmt.Sprintf("%s:%d", dstIP, dstPort)
 		if !ns.policy.IsHostAllowed(host) {
 			ns.emitBlockedEvent(host, "host not in allowlist")

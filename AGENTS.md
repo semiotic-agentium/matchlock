@@ -39,7 +39,7 @@ matchlock/
 │   ├── images/           # Internal image handling utilities
 │   └── mitm/             # MITM proxy internals
 ├── guest/
-│   ├── kernel/           # Guest kernel build configs
+│   ├── kernel/           # Guest kernel Dockerfile + per-arch .config files
 │   ├── initramfs/        # Guest initramfs setup
 │   └── fused/            # Guest FUSE daemon resources
 ├── sdk/
@@ -287,7 +287,10 @@ MATCHLOCK_KERNEL=/path/to/kernel matchlock run ...
 
 **Building Kernels Locally:**
 
-The kernel build uses Docker with Ubuntu 22.04 (GCC 11) for cross-compilation.
+The kernel build uses a multi-stage Dockerfile (`guest/kernel/Dockerfile`) with Docker BuildKit for
+idempotent, layer-cached builds. The base layer (Ubuntu 22.04 toolchain + kernel source download) is
+shared between architectures. Kernel configs are standalone files (`guest/kernel/{x86_64,arm64}.config`)
+so changing one arch config doesn't invalidate the other's build cache.
 
 ```bash
 # Build both architectures (default)
@@ -326,6 +329,7 @@ Required kernel options for Firecracker v1.8+:
 - `CONFIG_VSOCKETS=y` and `CONFIG_VIRTIO_VSOCKETS=y` - Host-guest communication
 - `CONFIG_FUSE_FS=y` - VFS support
 - `CONFIG_IP_PNP=y` - Required for kernel `ip=` boot parameter (network configuration)
+- `CONFIG_CGROUPS=y` - Cgroup support (v1 and v2) with cpu, memory, pids, io, cpuset, freezer controllers
 
 ## Linux Setup
 

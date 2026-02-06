@@ -21,6 +21,7 @@ type Builder struct {
 	guestAgentPath string
 	guestFusedPath string
 	forcePull      bool
+	diskSizeMB     int64
 }
 
 type BuildOptions struct {
@@ -28,6 +29,7 @@ type BuildOptions struct {
 	GuestAgentPath string
 	GuestFusedPath string
 	ForcePull      bool
+	DiskSizeMB     int64 // Total disk size in MB (0 = auto-size based on image content)
 }
 
 func NewBuilder(opts *BuildOptions) *Builder {
@@ -41,6 +43,7 @@ func NewBuilder(opts *BuildOptions) *Builder {
 		guestAgentPath: opts.GuestAgentPath,
 		guestFusedPath: opts.GuestFusedPath,
 		forcePull:      opts.ForcePull,
+		diskSizeMB:     opts.DiskSizeMB,
 	}
 }
 

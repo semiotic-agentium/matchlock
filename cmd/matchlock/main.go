@@ -135,6 +135,7 @@ func init() {
 	runCmd.Flags().Int("cpus", 1, "Number of CPUs")
 	runCmd.Flags().Int("memory", 512, "Memory in MB")
 	runCmd.Flags().Int("timeout", 300, "Timeout in seconds")
+	runCmd.Flags().Int("disk-size", 5120, "Disk size in MB")
 	runCmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	runCmd.Flags().BoolP("interactive", "i", false, "Keep STDIN open")
 	runCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
@@ -148,6 +149,7 @@ func init() {
 	viper.BindPFlag("run.cpus", runCmd.Flags().Lookup("cpus"))
 	viper.BindPFlag("run.memory", runCmd.Flags().Lookup("memory"))
 	viper.BindPFlag("run.timeout", runCmd.Flags().Lookup("timeout"))
+	viper.BindPFlag("run.disk-size", runCmd.Flags().Lookup("disk-size"))
 	viper.BindPFlag("run.tty", runCmd.Flags().Lookup("tty"))
 	viper.BindPFlag("run.interactive", runCmd.Flags().Lookup("interactive"))
 	viper.BindPFlag("run.pull", runCmd.Flags().Lookup("pull"))
@@ -202,6 +204,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	// Like Docker, -it means interactive TTY mode
 	interactiveMode := tty && interactive
 	pull, _ := cmd.Flags().GetBool("pull")
+	diskSize, _ := cmd.Flags().GetInt("disk-size")
 
 	command := shellQuoteArgs(args)
 
@@ -226,6 +229,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		GuestAgentPath: sandbox.DefaultGuestAgentPath(),
 		GuestFusedPath: sandbox.DefaultGuestFusedPath(),
 		ForcePull:      pull,
+		DiskSizeMB:     int64(diskSize),
 	})
 
 	buildResult, err := builder.Build(ctx, imageName)
@@ -273,6 +277,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 		Resources: &api.Resources{
 			CPUs:           cpus,
 			MemoryMB:       memory,
+			DiskSizeMB:     diskSize,
 			TimeoutSeconds: timeout,
 		},
 		Network: &api.NetworkConfig{
@@ -550,6 +555,7 @@ func runRPC(cmd *cobra.Command, args []string) error {
 		builder := image.NewBuilder(&image.BuildOptions{
 			GuestAgentPath: sandbox.DefaultGuestAgentPath(),
 			GuestFusedPath: sandbox.DefaultGuestFusedPath(),
+			DiskSizeMB:     int64(config.Resources.DiskSizeMB),
 		})
 
 		result, err := builder.Build(ctx, config.Image)

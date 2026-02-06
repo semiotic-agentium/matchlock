@@ -19,6 +19,7 @@ type Config struct {
 type Resources struct {
 	CPUs           int           `json:"cpus,omitempty"`
 	MemoryMB       int           `json:"memory_mb,omitempty"`
+	DiskSizeMB     int           `json:"disk_size_mb,omitempty"`
 	TimeoutSeconds int           `json:"timeout_seconds,omitempty"`
 	Timeout        time.Duration `json:"-"`
 }
@@ -76,6 +77,7 @@ func DefaultConfig() *Config {
 		Resources: &Resources{
 			CPUs:           1,
 			MemoryMB:       512,
+			DiskSizeMB:     5120,
 			TimeoutSeconds: 300,
 		},
 		Network: &NetworkConfig{
@@ -107,6 +109,9 @@ func (c *Config) Merge(other *Config) *Config {
 		}
 		if other.Resources.MemoryMB > 0 {
 			result.Resources.MemoryMB = other.Resources.MemoryMB
+		}
+		if other.Resources.DiskSizeMB > 0 {
+			result.Resources.DiskSizeMB = other.Resources.DiskSizeMB
 		}
 		if other.Resources.TimeoutSeconds > 0 {
 			result.Resources.TimeoutSeconds = other.Resources.TimeoutSeconds

@@ -131,6 +131,8 @@ type CreateOptions struct {
 	CPUs int
 	// MemoryMB is the memory in megabytes
 	MemoryMB int
+	// DiskSizeMB is the disk size in megabytes (default: 5120)
+	DiskSizeMB int
 	// TimeoutSeconds is the maximum execution time
 	TimeoutSeconds int
 	// AllowedHosts is a list of allowed network hosts (supports wildcards)
@@ -183,6 +185,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		"resources": map[string]interface{}{
 			"cpus":            opts.CPUs,
 			"memory_mb":       opts.MemoryMB,
+			"disk_size_mb":    opts.DiskSizeMB,
 			"timeout_seconds": opts.TimeoutSeconds,
 		},
 	}

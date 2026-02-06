@@ -46,9 +46,16 @@ func (b *Builder) createExt4(sourceDir, destPath string) error {
 		return nil
 	})
 
-	sizeMB := (totalSize / (1024 * 1024)) + 512
-	if sizeMB < 256 {
-		sizeMB = 256
+	sizeMB := b.diskSizeMB
+	if sizeMB <= 0 {
+		sizeMB = (totalSize / (1024 * 1024)) + 512
+		if sizeMB < 256 {
+			sizeMB = 256
+		}
+	}
+	contentMB := totalSize / (1024 * 1024)
+	if sizeMB < contentMB+64 {
+		sizeMB = contentMB + 64
 	}
 
 	tmpPath := destPath + ".tmp"

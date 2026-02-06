@@ -80,6 +80,14 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		return nil, fmt.Errorf("failed to copy rootfs: %w", err)
 	}
 
+	if config.Resources != nil && config.Resources.DiskSizeMB > 0 {
+		if err := resizeRootfs(vmRootfsPath, int64(config.Resources.DiskSizeMB)); err != nil {
+			os.Remove(vmRootfsPath)
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("failed to resize rootfs: %w", err)
+		}
+	}
+
 	// Allocate unique subnet for this VM
 	subnetAlloc := state.NewSubnetAllocator()
 	subnetInfo, err := subnetAlloc.Allocate(id)

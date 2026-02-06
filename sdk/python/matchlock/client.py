@@ -155,6 +155,7 @@ class Client:
             "resources": {
                 "cpus": opts.cpus,
                 "memory_mb": opts.memory_mb,
+                "disk_size_mb": opts.disk_size_mb,
                 "timeout_seconds": opts.timeout_seconds,
             },
         }

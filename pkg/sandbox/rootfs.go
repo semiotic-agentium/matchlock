@@ -8,6 +8,49 @@ import (
 	"strings"
 )
 
+// resizeRootfs expands an ext4 image to the given size in MB.
+// Uses truncate to expand the sparse file and resize2fs to grow the filesystem.
+// If the image is already larger than sizeMB, this is a no-op.
+func resizeRootfs(rootfsPath string, sizeMB int64) error {
+	if sizeMB <= 0 {
+		return nil
+	}
+
+	fi, err := os.Stat(rootfsPath)
+	if err != nil {
+		return fmt.Errorf("stat rootfs: %w", err)
+	}
+
+	targetBytes := sizeMB * 1024 * 1024
+	if fi.Size() >= targetBytes {
+		return nil
+	}
+
+	if err := os.Truncate(rootfsPath, targetBytes); err != nil {
+		return fmt.Errorf("truncate rootfs: %w", err)
+	}
+
+	e2fsckPath, _ := exec.LookPath("e2fsck")
+	if e2fsckPath != "" {
+		cmd := exec.Command(e2fsckPath, "-fy", rootfsPath)
+		cmd.Stdin = nil
+		cmd.CombinedOutput()
+	}
+
+	resize2fsPath, err := exec.LookPath("resize2fs")
+	if err != nil {
+		return fmt.Errorf("resize2fs not found; install e2fsprogs")
+	}
+
+	cmd := exec.Command(resize2fsPath, "-f", rootfsPath)
+	cmd.Stdin = nil
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("resize2fs: %w: %s", err, out)
+	}
+
+	return nil
+}
+
 // injectFileIntoRootfs writes a file into an ext4 image using debugfs.
 // This allows injecting files (like CA certs) without mounting the filesystem.
 // Requires debugfs to be installed (part of e2fsprogs).

@@ -40,9 +40,14 @@ func (b *DarwinBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mac
 
 	// Copy rootfs to temp file so each VM gets a clean image
 	// (VMs write to the rootfs and would corrupt the cached image)
-	tempRootfs, err := copyRootfsToTemp(config.RootfsPath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to copy rootfs: %w", err)
+	// If PrebuiltRootfs is set, skip the copy (caller already prepared it)
+	tempRootfs := config.PrebuiltRootfs
+	if tempRootfs == "" {
+		var err error
+		tempRootfs, err = CopyRootfsToTemp(config.RootfsPath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to copy rootfs: %w", err)
+		}
 	}
 
 	socketPair, err := createSocketPair()
@@ -198,8 +203,8 @@ func (b *DarwinBackend) configureStorage(vzConfig *vz.VirtualMachineConfiguratio
 	return nil
 }
 
-// copyRootfsToTemp copies the rootfs image to a temp file so each VM gets a clean copy
-func copyRootfsToTemp(srcPath string) (string, error) {
+// CopyRootfsToTemp copies the rootfs image to a temp file so each VM gets a clean copy
+func CopyRootfsToTemp(srcPath string) (string, error) {
 	src, err := os.Open(srcPath)
 	if err != nil {
 		return "", err

@@ -70,6 +70,9 @@ class CreateOptions:
     memory_mb: int = 512
     """Memory in megabytes."""
     
+    disk_size_mb: int = 5120
+    """Disk size in megabytes."""
+    
     timeout_seconds: int = 300
     """Maximum execution time in seconds."""
     

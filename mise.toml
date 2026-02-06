@@ -269,20 +269,21 @@ echo "Built and signed bin/matchlock for macOS"
 """
 
 [tasks."darwin:guest"]
-description = "Build ARM64 guest binaries for macOS VMs"
+description = "Build guest binaries matching current macOS host arch"
 run = """
 #!/usr/bin/env bash
 set -e
 mkdir -p bin $OUTPUT_DIR
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o bin/guest-agent ./cmd/guest-agent
-CGO_ENABLED=0 GOOS=linux GOARCH=arm64 go build -trimpath -o bin/guest-fused ./cmd/guest-fused
+GOARCH=$(uname -m | sed 's/x86_64/amd64/' | sed 's/arm64/arm64/')
+CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -o bin/guest-agent ./cmd/guest-agent
+CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -trimpath -o bin/guest-fused ./cmd/guest-fused
 cp bin/guest-agent $OUTPUT_DIR/guest-agent
 cp bin/guest-fused $OUTPUT_DIR/guest-fused
-echo "Built ARM64 guest binaries in bin/ and $OUTPUT_DIR"
+echo "Built ($GOARCH) guest binaries in bin/ and $OUTPUT_DIR"
 """
 
 [tasks."darwin:all"]
-description = "Build CLI (codesigned) and ARM64 guest binaries for macOS"
+description = "Build CLI (codesigned) and guest binaries for macOS"
 depends = ["darwin:build", "darwin:guest"]
 
 [tasks."darwin:setup"]

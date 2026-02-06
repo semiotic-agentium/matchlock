@@ -36,13 +36,13 @@ func main() {
 	run(client, "python3 --version")
 	run(client, "apk add --no-cache -q curl")
 
-	// Streaming exec — prints output as it arrives
+	// Streaming exec — prints output as it arrives (Anthropic streaming API)
 	result, err := client.ExecStream(
-		`curl -s https://api.anthropic.com/v1/messages `+
+		`curl -sN https://api.anthropic.com/v1/messages `+
 			`-H "Content-Type: application/json" `+
 			`-H "x-api-key: $ANTHROPIC_API_KEY" `+
 			`-H "anthropic-version: 2023-06-01" `+
-			`-d '{"model":"claude-3-haiku-20240307","max_tokens":50,"messages":[{"role":"user","content":"Say hello in exactly 3 words"}]}'`,
+			`-d '{"model":"claude-haiku-4-5-20251001","max_tokens":1000,"stream":true,"messages":[{"role":"user","content":"Explain TCP to me"}]}'`,
 		os.Stdout, os.Stderr,
 	)
 	if err != nil {

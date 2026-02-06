@@ -205,7 +205,14 @@ func runRun(cmd *cobra.Command, args []string) error {
 
 	command := shellQuoteArgs(args)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	var ctx context.Context
+	var cancel context.CancelFunc
+
+	if cmd.Flags().Changed("timeout") {
+		ctx, cancel = context.WithTimeout(context.Background(), time.Duration(timeout)*time.Second)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 	defer cancel()
 
 	sigCh := make(chan os.Signal, 1)

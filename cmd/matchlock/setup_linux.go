@@ -32,7 +32,7 @@ var setupLinuxCmd = &cobra.Command{
   3. Setting capabilities on matchlock binary
   4. Enabling IP forwarding
   5. Configuring /dev/net/tun
-  6. Setting up iptables rules for NAT
+  6. Ensuring nftables kernel module is loaded
 
 This command requires root privileges.`,
 	RunE: runSetupLinux,
@@ -257,7 +257,7 @@ func setupPermissions(userName, binaryPath string) error {
 		fmt.Printf("⚠ Could not set capabilities: %v\n", err)
 	}
 
-	if err := setupTunDevice(); err != nil {
+	if err := setupTunDevice(userName); err != nil {
 		fmt.Printf("⚠ Could not setup /dev/net/tun: %v\n", err)
 	}
 
@@ -287,24 +287,43 @@ func setCapabilities(binaryPath string) error {
 		return nil
 	}
 
-	if err := exec.Command("setcap", "cap_net_admin,cap_net_raw+eip", binaryPath).Run(); err != nil {
+	if err := exec.Command("setcap", "cap_net_admin,cap_net_raw+ep", binaryPath).Run(); err != nil {
 		return err
 	}
 	fmt.Printf("✓ Set capabilities on %s\n", binaryPath)
 	return nil
 }
 
-func setupTunDevice() error {
+func setupTunDevice(userName string) error {
 	if _, err := os.Stat("/dev/net/tun"); os.IsNotExist(err) {
 		os.MkdirAll("/dev/net", 0755)
 		if err := exec.Command("mknod", "/dev/net/tun", "c", "10", "200").Run(); err != nil {
 			return err
 		}
 	}
-	if err := os.Chmod("/dev/net/tun", 0666); err != nil {
+
+	if err := exec.Command("getent", "group", "netdev").Run(); err != nil {
+		if err := exec.Command("groupadd", "netdev").Run(); err != nil {
+			return fmt.Errorf("create netdev group: %w", err)
+		}
+		fmt.Println("✓ Created netdev group")
+	}
+
+	out, _ := exec.Command("groups", userName).Output()
+	if !strings.Contains(string(out), "netdev") {
+		if err := exec.Command("usermod", "-aG", "netdev", userName).Run(); err != nil {
+			return fmt.Errorf("add %s to netdev group: %w", userName, err)
+		}
+		fmt.Printf("✓ Added %s to netdev group\n", userName)
+	}
+
+	if err := exec.Command("chown", "root:netdev", "/dev/net/tun").Run(); err != nil {
+		return fmt.Errorf("chown /dev/net/tun: %w", err)
+	}
+	if err := os.Chmod("/dev/net/tun", 0660); err != nil {
 		return err
 	}
-	fmt.Println("✓ /dev/net/tun is accessible")
+	fmt.Println("✓ /dev/net/tun is accessible (group netdev, mode 0660)")
 	return nil
 }
 
@@ -323,34 +342,27 @@ func setupNetwork() error {
 }
 
 func enableIPForwarding() error {
-	sysctlConf := "/etc/sysctl.conf"
-	content, _ := os.ReadFile(sysctlConf)
-	hasForwarding := false
-	for _, line := range strings.Split(string(content), "\n") {
-		line = strings.TrimSpace(line)
-		if strings.HasPrefix(line, "#") {
-			continue
-		}
-		normalized := strings.ReplaceAll(line, " ", "")
-		if normalized == "net.ipv4.ip_forward=1" {
-			hasForwarding = true
-			break
+	dropInFile := "/etc/sysctl.d/99-matchlock.conf"
+	content := "# Enable IP forwarding for matchlock VM networking\nnet.ipv4.ip_forward = 1\n"
+
+	if existing, err := os.ReadFile(dropInFile); err == nil {
+		if string(existing) == content {
+			fmt.Println("✓ IP forwarding already configured")
+			if err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run(); err != nil {
+				return err
+			}
+			return nil
 		}
 	}
 
-	if !hasForwarding {
-		f, err := os.OpenFile(sysctlConf, os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
-		if err != nil {
-			return err
-		}
-		f.WriteString("net.ipv4.ip_forward = 1\n")
-		f.Close()
+	if err := os.WriteFile(dropInFile, []byte(content), 0644); err != nil {
+		return fmt.Errorf("write %s: %w", dropInFile, err)
 	}
 
 	if err := exec.Command("sysctl", "-w", "net.ipv4.ip_forward=1").Run(); err != nil {
 		return err
 	}
-	fmt.Println("✓ Enabled IP forwarding")
+	fmt.Printf("✓ Enabled IP forwarding (via %s)\n", dropInFile)
 	return nil
 }
 

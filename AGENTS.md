@@ -345,9 +345,9 @@ sudo ./bin/matchlock setup linux
 
 1. **Firecracker** - Downloads and installs the latest Firecracker binary
 2. **KVM access** - Adds your user to the `kvm` group
-3. **Capabilities** - Sets `CAP_NET_ADMIN` and `CAP_NET_RAW` on the matchlock binary
-4. **TUN device** - Ensures `/dev/net/tun` is accessible
-5. **IP forwarding** - Enables `net.ipv4.ip_forward` permanently
+3. **Capabilities** - Sets `CAP_NET_ADMIN` and `CAP_NET_RAW` (+ep) on the matchlock binary
+4. **TUN device** - Ensures `/dev/net/tun` is accessible (group-owned, mode 0660)
+5. **IP forwarding** - Enables `net.ipv4.ip_forward` via `/etc/sysctl.d/99-matchlock.conf`
 6. **nftables** - Ensures the nf_tables kernel module is loaded
 
 ### Running without sudo

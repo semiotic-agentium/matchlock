@@ -198,6 +198,10 @@ mount -t tmpfs tmpfs /dev/shm 2>/dev/null || true
 mount -t tmpfs tmpfs /run 2>/dev/null || true
 mount -t tmpfs tmpfs /tmp 2>/dev/null || true
 
+# Mount cgroup2 unified hierarchy
+mkdir -p /sys/fs/cgroup
+mount -t cgroup2 cgroup2 /sys/fs/cgroup 2>/dev/null || true
+
 hostname matchlock
 
 # Network setup - bring up interface and get IP via DHCP

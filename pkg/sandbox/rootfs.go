@@ -106,14 +106,18 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 	}
 	resolvTmp.Close()
 
-	// Build debugfs commands to inject all components
+	// Build debugfs commands to inject all components.
+	// debugfs cannot traverse symlinks, so we write to both /sbin/ and /usr/sbin/
+	// to handle distros where /sbin is real (Alpine) or a symlink (Ubuntu).
+	// rm before write because debugfs write silently fails on existing files.
 	var commands []string
 
-	// Create required directories
+	// Create directories that may not exist (mkdir on existing dirs/symlinks is harmless)
 	for _, dir := range []string{
 		"/opt",
 		"/opt/matchlock",
 		"/sbin",
+		"/usr/sbin",
 		"/run",
 		"/proc",
 		"/sys",
@@ -126,41 +130,37 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 		commands = append(commands, fmt.Sprintf("mkdir %s", dir))
 	}
 
-	// Inject guest binaries
-	commands = append(commands, fmt.Sprintf("write %s /opt/matchlock/guest-agent", guestAgentPath))
-	commands = append(commands, fmt.Sprintf("write %s /opt/matchlock/guest-fused", guestFusedPath))
+	type injection struct {
+		hostPath  string
+		guestPath string
+		exec      bool
+	}
 
-	// Inject init scripts (three locations for compatibility)
-	commands = append(commands, fmt.Sprintf("write %s /sbin/matchlock-init", initTmp.Name()))
-	commands = append(commands, fmt.Sprintf("write %s /init", initTmp.Name()))
-	commands = append(commands, fmt.Sprintf("write %s /sbin/init", initTmp.Name()))
+	injections := []injection{
+		{guestAgentPath, "/opt/matchlock/guest-agent", true},
+		{guestFusedPath, "/opt/matchlock/guest-fused", true},
+		// Write init to both real and usr-merged paths for cross-distro compat
+		{initTmp.Name(), "/sbin/matchlock-init", true},
+		{initTmp.Name(), "/usr/sbin/matchlock-init", true},
+		{initTmp.Name(), "/init", true},
+		{initTmp.Name(), "/sbin/init", true},
+		{initTmp.Name(), "/usr/sbin/init", true},
+		{resolvTmp.Name(), "/etc/resolv.conf", false},
+	}
 
-	// Inject DNS config
-	commands = append(commands, fmt.Sprintf("write %s /etc/resolv.conf", resolvTmp.Name()))
+	for _, inj := range injections {
+		commands = append(commands, fmt.Sprintf("rm %s", inj.guestPath))
+		commands = append(commands, fmt.Sprintf("write %s %s", inj.hostPath, inj.guestPath))
+		if inj.exec {
+			commands = append(commands, fmt.Sprintf("set_inode_field %s mode 0100755", inj.guestPath))
+		}
+	}
 
 	cmdStr := strings.Join(commands, "\n")
 	cmd := exec.Command("debugfs", "-w", rootfsPath)
 	cmd.Stdin = strings.NewReader(cmdStr)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("debugfs inject components: %w: %s", err, output)
-	}
-
-	// Set executable permissions on injected binaries and init scripts via debugfs
-	var chmodCommands []string
-	for _, path := range []string{
-		"/opt/matchlock/guest-agent",
-		"/opt/matchlock/guest-fused",
-		"/sbin/matchlock-init",
-		"/init",
-		"/sbin/init",
-	} {
-		chmodCommands = append(chmodCommands, fmt.Sprintf("set_inode_field %s mode 0100755", path))
-	}
-	chmodStr := strings.Join(chmodCommands, "\n")
-	cmd = exec.Command("debugfs", "-w", rootfsPath)
-	cmd.Stdin = strings.NewReader(chmodStr)
-	if output, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("debugfs set permissions: %w: %s", err, output)
 	}
 
 	// Resize if requested
@@ -244,6 +244,7 @@ func injectFileIntoRootfs(rootfsPath, guestPath string, content []byte) error {
 			commands = append(commands, fmt.Sprintf("mkdir %s", d))
 		}
 	}
+	commands = append(commands, fmt.Sprintf("rm %s", guestPath))
 	commands = append(commands, fmt.Sprintf("write %s %s", tmpPath, guestPath))
 
 	cmdStr := strings.Join(commands, "\n")

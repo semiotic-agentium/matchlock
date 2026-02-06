@@ -20,6 +20,7 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/rpc"
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
 	"github.com/jingkaihe/matchlock/pkg/state"
+	"github.com/jingkaihe/matchlock/pkg/version"
 	"github.com/jingkaihe/matchlock/pkg/vm"
 )
 
@@ -36,12 +37,21 @@ func shellQuoteArgs(args []string) string {
 }
 
 var rootCmd = &cobra.Command{
-	Use:   "matchlock",
-	Short: "A lightweight micro-VM sandbox for running llm agent securely",
-	Long: `Matchlock is a lightweight micro-VM sandbox for running llm agent
-securely with network interception and secret protection.`,
+	Use:     "matchlock",
+	Short:   "A lightweight micro-VM sandbox for running llm agent securely",
+	Long:    "Matchlock is a lightweight micro-VM sandbox for running llm agent\nsecurely with network interception and secret protection.",
+	Version: version.Version,
+
 	SilenceUsage:  true,
 	SilenceErrors: true,
+}
+
+var versionCmd = &cobra.Command{
+	Use:   "version",
+	Short: "Print version information",
+	Run: func(cmd *cobra.Command, args []string) {
+		fmt.Printf("matchlock %s (commit: %s, built: %s)\n", version.Version, version.GitCommit, version.BuildTime)
+	},
 }
 
 var runCmd = &cobra.Command{
@@ -196,6 +206,7 @@ func init() {
 	rootCmd.AddCommand(rmCmd)
 	rootCmd.AddCommand(pruneCmd)
 	rootCmd.AddCommand(rpcCmd)
+	rootCmd.AddCommand(versionCmd)
 
 	viper.SetEnvPrefix("MATCHLOCK")
 	viper.AutomaticEnv()

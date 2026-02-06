@@ -101,11 +101,6 @@ with Client(Config()) as client:
 
 See full examples in [`examples/go`](examples/go/main.go) and [`examples/python`](examples/python/main.py).
 
-## How It Works
-
-1. `matchlock run --image alpine:latest` pulls the OCI image, builds an ext4 rootfs, and boots a micro-VM. Subsequent runs hit cache.
-2. With `--allow-host` or `--secret`, all traffic routes through a transparent MITM proxy that enforces policy.
-
 ## Architecture
 
 ```mermaid

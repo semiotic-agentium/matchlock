@@ -29,7 +29,7 @@ type Sandbox struct {
 	vfsStopFunc func()
 	events      chan api.Event
 	stateMgr    *state.Manager
-	caInjector  *sandboxnet.CAInjector
+	caPool      *sandboxnet.CAPool
 	subnetInfo  *state.SubnetInfo
 	subnetAlloc *state.SubnetAllocator
 	workspace   string
@@ -146,7 +146,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	events := make(chan api.Event, 100)
 
 	var netStack *sandboxnet.NetworkStack
-	var caInjector *sandboxnet.CAInjector
+	var caPool *sandboxnet.CAPool
 
 	if needsInterception {
 		networkFile := darwinMachine.NetworkFile()
@@ -225,8 +225,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	}()
 
 	if netStack != nil {
-		caInjector = sandboxnet.NewCAInjector(netStack.CAPool())
-		if err := injectFileIntoRootfs(machine.RootfsPath(), "/etc/ssl/certs/matchlock-ca.crt", caInjector.CACertPEM()); err != nil {
+		caPool = netStack.CAPool()
+		if err := injectFileIntoRootfs(machine.RootfsPath(), "/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to inject CA cert into rootfs: %v\n", err)
 		}
 	}
@@ -242,7 +242,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		vfsStopFunc: vfsStopFunc,
 		events:      events,
 		stateMgr:    stateMgr,
-		caInjector:  caInjector,
+		caPool:      caPool,
 		subnetInfo:  subnetInfo,
 		subnetAlloc: subnetAlloc,
 		workspace:   workspace,
@@ -254,7 +254,7 @@ func (s *Sandbox) Config() *api.Config                { return s.config }
 func (s *Sandbox) Workspace() string                  { return s.workspace }
 func (s *Sandbox) Machine() vm.Machine                { return s.machine }
 func (s *Sandbox) Policy() *policy.Engine             { return s.policy }
-func (s *Sandbox) CAInjector() *sandboxnet.CAInjector { return s.caInjector }
+func (s *Sandbox) CAPool() *sandboxnet.CAPool { return s.caPool }
 
 func (s *Sandbox) Start(ctx context.Context) error {
 	return s.machine.Start(ctx)
@@ -272,7 +272,7 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 		opts.Env = make(map[string]string)
 	}
 
-	if s.caInjector != nil {
+	if s.caPool != nil {
 		certPath := "/etc/ssl/certs/matchlock-ca.crt"
 		opts.Env["SSL_CERT_FILE"] = certPath
 		opts.Env["REQUESTS_CA_BUNDLE"] = certPath

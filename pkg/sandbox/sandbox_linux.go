@@ -91,6 +91,23 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		return nil, fmt.Errorf("failed to prepare rootfs: %w", err)
 	}
 
+	// Create CAPool early and inject cert into rootfs before VM creation
+	needsProxy := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
+	var caPool *sandboxnet.CAPool
+	if needsProxy {
+		caPool, err = sandboxnet.NewCAPool()
+		if err != nil {
+			os.Remove(vmRootfsPath)
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("failed to create CA pool: %w", err)
+		}
+		if err := injectFileIntoRootfs(vmRootfsPath, "/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
+			os.Remove(vmRootfsPath)
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("failed to inject CA cert into rootfs: %w", err)
+		}
+	}
+
 	// Allocate unique subnet for this VM
 	subnetAlloc := state.NewSubnetAllocator()
 	subnetInfo, err := subnetAlloc.Allocate(id)
@@ -163,7 +180,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	var proxy *sandboxnet.TransparentProxy
 	var fwRules FirewallRules
 
-	needsProxy := config.Network != nil && (len(config.Network.AllowedHosts) > 0 || len(config.Network.Secrets) > 0)
 	if needsProxy {
 		proxy, err = sandboxnet.NewTransparentProxy(&sandboxnet.ProxyConfig{
 			BindAddr:  proxyBindAddr,
@@ -171,6 +187,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 			HTTPSPort: httpsPort,
 			Policy:    policyEngine,
 			Events:    events,
+			CAPool:    caPool,
 		})
 		if err != nil {
 			machine.Close()
@@ -230,16 +247,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
 		return nil, fmt.Errorf("failed to start VFS server: %w", err)
-	}
-
-	// Set up CA injector if proxy is enabled
-	// Inject CA cert directly into rootfs so it's available regardless of VFS mounts
-	var caPool *sandboxnet.CAPool
-	if proxy != nil {
-		caPool = proxy.CAPool()
-		if err := injectFileIntoRootfs(vmRootfsPath, "/etc/ssl/certs/matchlock-ca.crt", caPool.CACertPEM()); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to inject CA cert into rootfs: %v\n", err)
-		}
 	}
 
 	return &Sandbox{

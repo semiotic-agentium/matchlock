@@ -299,6 +299,26 @@ func (s *Sandbox) Stop(ctx context.Context) error {
 	return s.machine.Stop(ctx)
 }
 
+// PrepareExecEnv returns an ExecOptions with CA cert env vars and secret
+// placeholders pre-populated. Callers that need custom env should merge
+// additional entries into the returned options.
+func (s *Sandbox) PrepareExecEnv() *api.ExecOptions {
+	opts := &api.ExecOptions{Env: make(map[string]string)}
+	if s.caPool != nil {
+		certPath := "/etc/ssl/certs/matchlock-ca.crt"
+		opts.Env["SSL_CERT_FILE"] = certPath
+		opts.Env["REQUESTS_CA_BUNDLE"] = certPath
+		opts.Env["CURL_CA_BUNDLE"] = certPath
+		opts.Env["NODE_EXTRA_CA_CERTS"] = certPath
+	}
+	if s.policy != nil {
+		for name, placeholder := range s.policy.GetPlaceholders() {
+			opts.Env[name] = placeholder
+		}
+	}
+	return opts
+}
+
 // Exec executes a command in the sandbox.
 func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
 	if opts == nil {
@@ -308,20 +328,9 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 		opts.Env = make(map[string]string)
 	}
 
-	// Inject CA certificate environment variables if proxy is enabled
-	if s.caPool != nil {
-		certPath := "/etc/ssl/certs/matchlock-ca.crt"
-		opts.Env["SSL_CERT_FILE"] = certPath
-		opts.Env["REQUESTS_CA_BUNDLE"] = certPath
-		opts.Env["CURL_CA_BUNDLE"] = certPath
-		opts.Env["NODE_EXTRA_CA_CERTS"] = certPath
-	}
-
-	// Inject secret placeholders as environment variables
-	if s.policy != nil {
-		for name, placeholder := range s.policy.GetPlaceholders() {
-			opts.Env[name] = placeholder
-		}
+	prepared := s.PrepareExecEnv()
+	for k, v := range prepared.Env {
+		opts.Env[k] = v
 	}
 
 	return s.machine.Exec(ctx, command, opts)

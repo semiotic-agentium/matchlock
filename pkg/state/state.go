@@ -108,6 +108,10 @@ func (m *Manager) List() ([]VMState, error) {
 func (m *Manager) Get(id string) (VMState, error) {
 	dir := filepath.Join(m.baseDir, id)
 
+	if _, err := os.Stat(dir); os.IsNotExist(err) {
+		return VMState{}, fmt.Errorf("VM %s not found", id)
+	}
+
 	var state VMState
 	state.ID = id
 

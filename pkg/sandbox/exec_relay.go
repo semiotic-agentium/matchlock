@@ -139,19 +139,7 @@ func (r *ExecRelay) handleExecInteractive(conn net.Conn, data []byte) {
 		return
 	}
 
-	opts := &api.ExecOptions{Env: make(map[string]string)}
-	if r.sb.CAPool() != nil {
-		certPath := "/etc/ssl/certs/matchlock-ca.crt"
-		opts.Env["SSL_CERT_FILE"] = certPath
-		opts.Env["REQUESTS_CA_BUNDLE"] = certPath
-		opts.Env["CURL_CA_BUNDLE"] = certPath
-		opts.Env["NODE_EXTRA_CA_CERTS"] = certPath
-	}
-	if r.sb.Policy() != nil {
-		for name, placeholder := range r.sb.Policy().GetPlaceholders() {
-			opts.Env[name] = placeholder
-		}
-	}
+	opts := r.sb.PrepareExecEnv()
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutWriter := &relayWriter{conn: conn, msgType: relayMsgStdout}

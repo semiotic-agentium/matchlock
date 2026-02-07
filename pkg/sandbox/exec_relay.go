@@ -25,13 +25,15 @@ const (
 )
 
 type relayExecRequest struct {
-	Command string `json:"command"`
+	Command    string `json:"command"`
+	WorkingDir string `json:"working_dir,omitempty"`
 }
 
 type relayExecInteractiveRequest struct {
-	Command string `json:"command"`
-	Rows    uint16 `json:"rows"`
-	Cols    uint16 `json:"cols"`
+	Command    string `json:"command"`
+	WorkingDir string `json:"working_dir,omitempty"`
+	Rows       uint16 `json:"rows"`
+	Cols       uint16 `json:"cols"`
 }
 
 type relayExecResult struct {
@@ -113,7 +115,12 @@ func (r *ExecRelay) handleExec(conn net.Conn, data []byte) {
 		return
 	}
 
-	result, err := r.sb.Exec(context.Background(), req.Command, nil)
+	var opts *api.ExecOptions
+	if req.WorkingDir != "" {
+		opts = &api.ExecOptions{WorkingDir: req.WorkingDir}
+	}
+
+	result, err := r.sb.Exec(context.Background(), req.Command, opts)
 	if err != nil {
 		sendRelayResult(conn, &relayExecResult{ExitCode: 1, Error: err.Error()})
 		return
@@ -140,6 +147,9 @@ func (r *ExecRelay) handleExecInteractive(conn net.Conn, data []byte) {
 	}
 
 	opts := r.sb.PrepareExecEnv()
+	if req.WorkingDir != "" {
+		opts.WorkingDir = req.WorkingDir
+	}
 
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutWriter := &relayWriter{conn: conn, msgType: relayMsgStdout}
@@ -229,14 +239,14 @@ func sendRelayResult(conn net.Conn, result *relayExecResult) {
 }
 
 // ExecViaRelay connects to an exec relay socket and runs a command.
-func ExecViaRelay(ctx context.Context, socketPath, command string) (*api.ExecResult, error) {
+func ExecViaRelay(ctx context.Context, socketPath, command, workingDir string) (*api.ExecResult, error) {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
 		return nil, fmt.Errorf("connect to exec relay: %w", err)
 	}
 	defer conn.Close()
 
-	req := relayExecRequest{Command: command}
+	req := relayExecRequest{Command: command, WorkingDir: workingDir}
 	reqData, _ := json.Marshal(req)
 	if err := sendRelayMsg(conn, relayMsgExec, reqData); err != nil {
 		return nil, fmt.Errorf("send exec request: %w", err)
@@ -272,7 +282,7 @@ func ExecViaRelay(ctx context.Context, socketPath, command string) (*api.ExecRes
 }
 
 // ExecInteractiveViaRelay connects to an exec relay socket and runs an interactive command.
-func ExecInteractiveViaRelay(ctx context.Context, socketPath, command string, rows, cols uint16, stdin io.Reader, stdout io.Writer) (int, error) {
+func ExecInteractiveViaRelay(ctx context.Context, socketPath, command, workingDir string, rows, cols uint16, stdin io.Reader, stdout io.Writer) (int, error) {
 	conn, err := net.Dial("unix", socketPath)
 	if err != nil {
 		return 1, fmt.Errorf("connect to exec relay: %w", err)
@@ -280,9 +290,10 @@ func ExecInteractiveViaRelay(ctx context.Context, socketPath, command string, ro
 	defer conn.Close()
 
 	req := relayExecInteractiveRequest{
-		Command: command,
-		Rows:    rows,
-		Cols:    cols,
+		Command:    command,
+		WorkingDir: workingDir,
+		Rows:       rows,
+		Cols:       cols,
 	}
 	reqData, _ := json.Marshal(req)
 	if err := sendRelayMsg(conn, relayMsgExecInteractive, reqData); err != nil {

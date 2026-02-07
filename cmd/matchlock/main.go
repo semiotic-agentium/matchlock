@@ -154,6 +154,7 @@ func init() {
 	runCmd.Flags().BoolP("interactive", "i", false, "Keep STDIN open")
 	runCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
 	runCmd.Flags().Bool("rm", true, "Remove sandbox after command exits (set --rm=false to keep running)")
+	runCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: workspace path)")
 	runCmd.MarkFlagRequired("image")
 
 	viper.BindPFlag("run.image", runCmd.Flags().Lookup("image"))
@@ -173,6 +174,7 @@ func init() {
 
 	execCmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	execCmd.Flags().BoolP("interactive", "i", false, "Keep STDIN open")
+	execCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: workspace path)")
 
 	buildCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
 
@@ -221,6 +223,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	secrets, _ := cmd.Flags().GetStringSlice("secret")
 	rm, _ := cmd.Flags().GetBool("rm")
 
+	workdir, _ := cmd.Flags().GetString("workdir")
 	interactiveMode := tty && interactive
 	pull, _ := cmd.Flags().GetBool("pull")
 	diskSize, _ := cmd.Flags().GetInt("disk-size")
@@ -334,7 +337,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if interactiveMode {
-		exitCode := runInteractive(ctx, sb, command)
+		exitCode := runInteractive(ctx, sb, command, workdir)
 		if rm {
 			sb.Close()
 		}
@@ -342,7 +345,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(args) > 0 {
-		result, err := sb.Exec(ctx, command, nil)
+		var opts *api.ExecOptions
+		if workdir != "" {
+			opts = &api.ExecOptions{WorkingDir: workdir}
+		}
+		result, err := sb.Exec(ctx, command, opts)
 		if err != nil {
 			if rm {
 				sb.Close()
@@ -374,6 +381,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 
 	tty, _ := cmd.Flags().GetBool("tty")
 	interactive, _ := cmd.Flags().GetBool("interactive")
+	workdir, _ := cmd.Flags().GetString("workdir")
 	interactiveMode := tty && interactive
 
 	if len(cmdArgs) == 0 && !interactiveMode {
@@ -407,10 +415,10 @@ func runExec(cmd *cobra.Command, args []string) error {
 	}()
 
 	if interactiveMode {
-		return runExecInteractive(ctx, execSocketPath, command)
+		return runExecInteractive(ctx, execSocketPath, command, workdir)
 	}
 
-	result, err := sandbox.ExecViaRelay(ctx, execSocketPath, command)
+	result, err := sandbox.ExecViaRelay(ctx, execSocketPath, command, workdir)
 	if err != nil {
 		return fmt.Errorf("exec failed: %w", err)
 	}
@@ -421,7 +429,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runExecInteractive(ctx context.Context, execSocketPath, command string) error {
+func runExecInteractive(ctx context.Context, execSocketPath, command, workdir string) error {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		return fmt.Errorf("-it requires a TTY")
 	}
@@ -437,7 +445,7 @@ func runExecInteractive(ctx context.Context, execSocketPath, command string) err
 	}
 	defer term.Restore(int(os.Stdin.Fd()), oldState)
 
-	exitCode, err := sandbox.ExecInteractiveViaRelay(ctx, execSocketPath, command, uint16(rows), uint16(cols), os.Stdin, os.Stdout)
+	exitCode, err := sandbox.ExecInteractiveViaRelay(ctx, execSocketPath, command, workdir, uint16(rows), uint16(cols), os.Stdin, os.Stdout)
 	if err != nil {
 		term.Restore(int(os.Stdin.Fd()), oldState)
 		return fmt.Errorf("interactive exec failed: %w", err)
@@ -471,7 +479,7 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command string) int {
+func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command, workdir string) int {
 	if !term.IsTerminal(int(os.Stdin.Fd())) {
 		fmt.Fprintln(os.Stderr, "Error: -it requires a TTY")
 		return 1
@@ -512,6 +520,9 @@ func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command string) in
 	}
 
 	opts := sb.PrepareExecEnv()
+	if workdir != "" {
+		opts.WorkingDir = workdir
+	}
 
 	exitCode, err := interactiveMachine.ExecInteractive(ctx, command, opts, uint16(rows), uint16(cols), os.Stdin, os.Stdout, resizeCh)
 	if err != nil {

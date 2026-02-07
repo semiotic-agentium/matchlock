@@ -231,35 +231,35 @@ const (
 
 // ExecRequest is sent from host to guest to execute a command
 type ExecRequest struct {
-	Command    string
-	Args       []string
-	WorkingDir string
-	Env        map[string]string
-	Stdin      []byte
+	Command    string            `json:"command"`
+	Args       []string          `json:"args,omitempty"`
+	WorkingDir string            `json:"working_dir,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Stdin      []byte            `json:"stdin,omitempty"`
 }
 
 // ExecTTYRequest is sent from host to guest for interactive execution
 type ExecTTYRequest struct {
-	Command    string
-	Args       []string
-	WorkingDir string
-	Env        map[string]string
-	Rows       uint16
-	Cols       uint16
+	Command    string            `json:"command"`
+	Args       []string          `json:"args,omitempty"`
+	WorkingDir string            `json:"working_dir,omitempty"`
+	Env        map[string]string `json:"env,omitempty"`
+	Rows       uint16            `json:"rows"`
+	Cols       uint16            `json:"cols"`
 }
 
 // WindowSize represents terminal dimensions
 type WindowSize struct {
-	Rows uint16
-	Cols uint16
+	Rows uint16 `json:"rows"`
+	Cols uint16 `json:"cols"`
 }
 
 // ExecResponse is sent from guest to host with execution results
 type ExecResponse struct {
-	ExitCode int
-	Stdout   []byte
-	Stderr   []byte
-	Error    string
+	ExitCode int    `json:"exit_code"`
+	Stdout   []byte `json:"stdout,omitempty"`
+	Stderr   []byte `json:"stderr,omitempty"`
+	Error    string `json:"error,omitempty"`
 }
 
 // WriteMessage writes a length-prefixed message to the connection

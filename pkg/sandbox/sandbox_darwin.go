@@ -279,7 +279,10 @@ func (s *Sandbox) Stop(ctx context.Context) error {
 }
 
 func (s *Sandbox) PrepareExecEnv() *api.ExecOptions {
-	opts := &api.ExecOptions{Env: make(map[string]string)}
+	opts := &api.ExecOptions{
+		WorkingDir: s.config.GetWorkspace(),
+		Env:        make(map[string]string),
+	}
 	if s.caPool != nil {
 		certPath := "/etc/ssl/certs/matchlock-ca.crt"
 		opts.Env["SSL_CERT_FILE"] = certPath
@@ -304,6 +307,9 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 	}
 
 	prepared := s.PrepareExecEnv()
+	if opts.WorkingDir == "" {
+		opts.WorkingDir = prepared.WorkingDir
+	}
 	for k, v := range prepared.Env {
 		opts.Env[k] = v
 	}

@@ -278,6 +278,23 @@ func (s *Sandbox) Stop(ctx context.Context) error {
 	return s.machine.Stop(ctx)
 }
 
+func (s *Sandbox) PrepareExecEnv() *api.ExecOptions {
+	opts := &api.ExecOptions{Env: make(map[string]string)}
+	if s.caPool != nil {
+		certPath := "/etc/ssl/certs/matchlock-ca.crt"
+		opts.Env["SSL_CERT_FILE"] = certPath
+		opts.Env["REQUESTS_CA_BUNDLE"] = certPath
+		opts.Env["CURL_CA_BUNDLE"] = certPath
+		opts.Env["NODE_EXTRA_CA_CERTS"] = certPath
+	}
+	if s.policy != nil {
+		for name, placeholder := range s.policy.GetPlaceholders() {
+			opts.Env[name] = placeholder
+		}
+	}
+	return opts
+}
+
 func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error) {
 	if opts == nil {
 		opts = &api.ExecOptions{}
@@ -286,18 +303,9 @@ func (s *Sandbox) Exec(ctx context.Context, command string, opts *api.ExecOption
 		opts.Env = make(map[string]string)
 	}
 
-	if s.caPool != nil {
-		certPath := "/etc/ssl/certs/matchlock-ca.crt"
-		opts.Env["SSL_CERT_FILE"] = certPath
-		opts.Env["REQUESTS_CA_BUNDLE"] = certPath
-		opts.Env["CURL_CA_BUNDLE"] = certPath
-		opts.Env["NODE_EXTRA_CA_CERTS"] = certPath
-	}
-
-	if s.policy != nil {
-		for name, placeholder := range s.policy.GetPlaceholders() {
-			opts.Env[name] = placeholder
-		}
+	prepared := s.PrepareExecEnv()
+	for k, v := range prepared.Env {
+		opts.Env[k] = v
 	}
 
 	return s.machine.Exec(ctx, command, opts)

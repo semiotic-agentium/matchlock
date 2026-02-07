@@ -8,6 +8,13 @@ import (
 // DefaultWorkspace is the default mount point for the VFS in the guest
 const DefaultWorkspace = "/workspace"
 
+const (
+	DefaultCPUs           = 1
+	DefaultMemoryMB       = 512
+	DefaultDiskSizeMB     = 5120
+	DefaultTimeoutSeconds = 300
+)
+
 type Config struct {
 	Image     string            `json:"image,omitempty"`
 	Resources *Resources        `json:"resources,omitempty"`
@@ -75,10 +82,10 @@ func (c *Config) GetWorkspace() string {
 func DefaultConfig() *Config {
 	return &Config{
 		Resources: &Resources{
-			CPUs:           1,
-			MemoryMB:       512,
-			DiskSizeMB:     5120,
-			TimeoutSeconds: 300,
+			CPUs:           DefaultCPUs,
+			MemoryMB:       DefaultMemoryMB,
+			DiskSizeMB:     DefaultDiskSizeMB,
+			TimeoutSeconds: DefaultTimeoutSeconds,
 		},
 		Network: &NetworkConfig{
 			BlockPrivateIPs: true,

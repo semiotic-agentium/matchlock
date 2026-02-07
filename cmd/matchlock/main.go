@@ -24,18 +24,6 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/vm"
 )
 
-func shellQuoteArgs(args []string) string {
-	quoted := make([]string, len(args))
-	for i, arg := range args {
-		if strings.ContainsAny(arg, " \t\n\"'`$\\!*?[]{}();<>&|") {
-			quoted[i] = "'" + strings.ReplaceAll(arg, "'", "'\"'\"'") + "'"
-		} else {
-			quoted[i] = arg
-		}
-	}
-	return strings.Join(quoted, " ")
-}
-
 var rootCmd = &cobra.Command{
 	Use:     "matchlock",
 	Short:   "A lightweight micro-VM sandbox for running llm agent securely",
@@ -158,10 +146,10 @@ func init() {
 	runCmd.Flags().StringSlice("allow-host", nil, "Allowed hosts (can be repeated)")
 	runCmd.Flags().StringSliceP("volume", "v", nil, "Volume mount (host:guest or host:guest:ro)")
 	runCmd.Flags().StringSlice("secret", nil, "Secret (NAME=VALUE@host1,host2 or NAME@host1,host2)")
-	runCmd.Flags().Int("cpus", 1, "Number of CPUs")
-	runCmd.Flags().Int("memory", 512, "Memory in MB")
-	runCmd.Flags().Int("timeout", 300, "Timeout in seconds")
-	runCmd.Flags().Int("disk-size", 5120, "Disk size in MB")
+	runCmd.Flags().Int("cpus", api.DefaultCPUs, "Number of CPUs")
+	runCmd.Flags().Int("memory", api.DefaultMemoryMB, "Memory in MB")
+	runCmd.Flags().Int("timeout", api.DefaultTimeoutSeconds, "Timeout in seconds")
+	runCmd.Flags().Int("disk-size", api.DefaultDiskSizeMB, "Disk size in MB")
 	runCmd.Flags().BoolP("tty", "t", false, "Allocate a pseudo-TTY")
 	runCmd.Flags().BoolP("interactive", "i", false, "Keep STDIN open")
 	runCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
@@ -237,7 +225,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	pull, _ := cmd.Flags().GetBool("pull")
 	diskSize, _ := cmd.Flags().GetInt("disk-size")
 
-	command := shellQuoteArgs(args)
+	command := api.ShellQuoteArgs(args)
 
 	if rm && len(args) == 0 && !interactiveMode {
 		return fmt.Errorf("command required (or use --rm=false to start without a command)")
@@ -296,7 +284,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	if len(secrets) > 0 {
 		parsedSecrets = make(map[string]api.Secret)
 		for _, s := range secrets {
-			name, secret, err := parseSecret(s)
+			name, secret, err := api.ParseSecret(s)
 			if err != nil {
 				return fmt.Errorf("invalid secret %q: %w", s, err)
 			}
@@ -406,7 +394,7 @@ func runExec(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("exec socket not found for %s (was it started with --rm=false?)", vmID)
 	}
 
-	command := shellQuoteArgs(cmdArgs)
+	command := api.ShellQuoteArgs(cmdArgs)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -523,19 +511,7 @@ func runInteractive(ctx context.Context, sb *sandbox.Sandbox, command string) in
 		return 1
 	}
 
-	opts := &api.ExecOptions{Env: make(map[string]string)}
-	if sb.CAPool() != nil {
-		certPath := "/etc/ssl/certs/matchlock-ca.crt"
-		opts.Env["SSL_CERT_FILE"] = certPath
-		opts.Env["REQUESTS_CA_BUNDLE"] = certPath
-		opts.Env["CURL_CA_BUNDLE"] = certPath
-		opts.Env["NODE_EXTRA_CA_CERTS"] = certPath
-	}
-	if sb.Policy() != nil {
-		for name, placeholder := range sb.Policy().GetPlaceholders() {
-			opts.Env[name] = placeholder
-		}
-	}
+	opts := sb.PrepareExecEnv()
 
 	exitCode, err := interactiveMachine.ExecInteractive(ctx, command, opts, uint16(rows), uint16(cols), os.Stdin, os.Stdout, resizeCh)
 	if err != nil {
@@ -685,44 +661,4 @@ func runRPC(cmd *cobra.Command, args []string) error {
 	}
 
 	return rpc.RunRPC(ctx, factory)
-}
-
-func parseSecret(s string) (string, api.Secret, error) {
-	atIdx := strings.LastIndex(s, "@")
-	if atIdx == -1 {
-		return "", api.Secret{}, fmt.Errorf("missing @hosts (format: NAME=VALUE@host1,host2 or NAME@host1,host2)")
-	}
-
-	hostsStr := s[atIdx+1:]
-	if hostsStr == "" {
-		return "", api.Secret{}, fmt.Errorf("no hosts specified after @")
-	}
-	hosts := strings.Split(hostsStr, ",")
-	for i := range hosts {
-		hosts[i] = strings.TrimSpace(hosts[i])
-	}
-
-	nameValue := s[:atIdx]
-	eqIdx := strings.Index(nameValue, "=")
-
-	var name, value string
-	if eqIdx == -1 {
-		name = nameValue
-		value = os.Getenv(name)
-		if value == "" {
-			return "", api.Secret{}, fmt.Errorf("environment variable $%s is not set (hint: use 'sudo -E' to preserve env vars, or pass inline: %s=VALUE@%s)", name, name, hostsStr)
-		}
-	} else {
-		name = nameValue[:eqIdx]
-		value = nameValue[eqIdx+1:]
-	}
-
-	if name == "" {
-		return "", api.Secret{}, fmt.Errorf("secret name cannot be empty")
-	}
-
-	return name, api.Secret{
-		Value: value,
-		Hosts: hosts,
-	}, nil
 }

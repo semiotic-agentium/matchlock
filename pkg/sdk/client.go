@@ -30,6 +30,8 @@ import (
 	"os/exec"
 	"sync"
 	"sync/atomic"
+
+	"github.com/jingkaihe/matchlock/pkg/api"
 )
 
 // Client is a Matchlock JSON-RPC client.
@@ -196,13 +198,16 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		return "", fmt.Errorf("Image is required (e.g., alpine:latest)")
 	}
 	if opts.CPUs == 0 {
-		opts.CPUs = 1
+		opts.CPUs = api.DefaultCPUs
 	}
 	if opts.MemoryMB == 0 {
-		opts.MemoryMB = 512
+		opts.MemoryMB = api.DefaultMemoryMB
+	}
+	if opts.DiskSizeMB == 0 {
+		opts.DiskSizeMB = api.DefaultDiskSizeMB
 	}
 	if opts.TimeoutSeconds == 0 {
-		opts.TimeoutSeconds = 300
+		opts.TimeoutSeconds = api.DefaultTimeoutSeconds
 	}
 
 	params := map[string]interface{}{

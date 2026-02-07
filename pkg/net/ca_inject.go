@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 )
 
+const guestCACertPath = "/etc/ssl/certs/sandbox-ca.crt"
+
 type CAInjector struct {
 	caPool *CAPool
 }
@@ -18,18 +20,12 @@ func (i *CAInjector) CACertPEM() []byte {
 	return i.caPool.CACertPEM()
 }
 
-func (i *CAInjector) CACertPath() string {
-	return i.caPool.CACertPath()
-}
-
 func (i *CAInjector) GetEnvVars() map[string]string {
-	certPath := "/etc/ssl/certs/sandbox-ca.crt"
-
 	return map[string]string{
-		"SSL_CERT_FILE":       certPath,
-		"REQUESTS_CA_BUNDLE":  certPath,
-		"CURL_CA_BUNDLE":      certPath,
-		"NODE_EXTRA_CA_CERTS": certPath,
+		"SSL_CERT_FILE":       guestCACertPath,
+		"REQUESTS_CA_BUNDLE":  guestCACertPath,
+		"CURL_CA_BUNDLE":      guestCACertPath,
+		"NODE_EXTRA_CA_CERTS": guestCACertPath,
 	}
 }
 
@@ -97,24 +93,4 @@ func (i *CAInjector) WriteFiles(destDir string) error {
 	return nil
 }
 
-func (i *CAInjector) GetCurlFlags() string {
-	return fmt.Sprintf("--cacert %s", i.CACertPath())
-}
 
-func (i *CAInjector) GetWgetFlags() string {
-	return fmt.Sprintf("--ca-certificate=%s", i.CACertPath())
-}
-
-func (i *CAInjector) GetPythonCode() string {
-	return fmt.Sprintf(`
-import os
-os.environ['SSL_CERT_FILE'] = '%s'
-os.environ['REQUESTS_CA_BUNDLE'] = '%s'
-`, "/etc/ssl/certs/sandbox-ca.crt", "/etc/ssl/certs/sandbox-ca.crt")
-}
-
-func (i *CAInjector) GetNodeCode() string {
-	return fmt.Sprintf(`
-process.env.NODE_EXTRA_CA_CERTS = '%s';
-`, "/etc/ssl/certs/sandbox-ca.crt")
-}

@@ -183,8 +183,6 @@ func TestListFiles(t *testing.T) {
 }
 
 func TestExecWithDir(t *testing.T) {
-	t.Skip("known bug: working_dir is not applied by guest agent")
-
 	client := launchAlpine(t)
 
 	_, err := client.Exec("mkdir -p /tmp/testdir && echo hi > /tmp/testdir/hello.txt")
@@ -198,6 +196,63 @@ func TestExecWithDir(t *testing.T) {
 	}
 	if got := strings.TrimSpace(result.Stdout); got != "hi" {
 		t.Errorf("stdout = %q, want %q", got, "hi")
+	}
+}
+
+func TestExecWithDirPwd(t *testing.T) {
+	client := launchAlpine(t)
+
+	result, err := client.ExecWithDir("pwd", "/tmp")
+	if err != nil {
+		t.Fatalf("ExecWithDir: %v", err)
+	}
+	if got := strings.TrimSpace(result.Stdout); got != "/tmp" {
+		t.Errorf("pwd = %q, want %q", got, "/tmp")
+	}
+}
+
+func TestExecWithDirDefaultIsWorkspace(t *testing.T) {
+	client := launchAlpine(t)
+
+	result, err := client.Exec("pwd")
+	if err != nil {
+		t.Fatalf("Exec: %v", err)
+	}
+	if got := strings.TrimSpace(result.Stdout); got != "/workspace" {
+		t.Errorf("default pwd = %q, want %q", got, "/workspace")
+	}
+}
+
+func TestExecWithDirRelativeCommand(t *testing.T) {
+	client := launchAlpine(t)
+
+	_, err := client.Exec("mkdir -p /opt/myapp && echo '#!/bin/sh\necho running-from-myapp' > /opt/myapp/run.sh && chmod +x /opt/myapp/run.sh")
+	if err != nil {
+		t.Fatalf("setup: %v", err)
+	}
+
+	result, err := client.ExecWithDir("sh run.sh", "/opt/myapp")
+	if err != nil {
+		t.Fatalf("ExecWithDir: %v", err)
+	}
+	if got := strings.TrimSpace(result.Stdout); got != "running-from-myapp" {
+		t.Errorf("stdout = %q, want %q", got, "running-from-myapp")
+	}
+}
+
+func TestExecStreamWithDir(t *testing.T) {
+	client := launchAlpine(t)
+
+	var stdout, stderr bytes.Buffer
+	result, err := client.ExecStreamWithDir("pwd", "/var", &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("ExecStreamWithDir: %v", err)
+	}
+	if result.ExitCode != 0 {
+		t.Errorf("exit code = %d, want 0", result.ExitCode)
+	}
+	if got := strings.TrimSpace(stdout.String()); got != "/var" {
+		t.Errorf("pwd = %q, want %q", got, "/var")
 	}
 }
 

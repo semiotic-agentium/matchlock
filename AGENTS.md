@@ -5,7 +5,7 @@ A lightweight micro-VM sandbox for running AI-generated code securely with netwo
 ## Tech Stack
 
 - **Language**: Go 1.25
-- **VM Backend**: Firecracker micro-VMs (Linux), Virtualization.framework (macOS/Apple Silicon)
+- **VM Backend**: Firecracker micro-VMs (Linux), Virtualization.framework (macOS/Apple Silicon only, Intel not supported)
 - **Network**: nftables transparent proxy (Linux), Apple native NAT or gVisor userspace TCP/IP stack (macOS), HTTP/TLS MITM
 - **Filesystem**: Pluggable VFS providers (Memory, RealFS, Readonly, Overlay)
 - **Communication**: Vsock for host-guest, JSON-RPC 2.0 for API
@@ -92,8 +92,8 @@ mise run release           # Manual release (cross-builds + uploads to GitHub)
 
 ## CI/CD
 
-- **CI** (`.github/workflows/ci.yml`): Runs on PRs and pushes to `main`. Builds + tests on Linux (ubuntu-latest) and macOS (macos-13 Intel + macos-latest ARM64).
-- **Release** (`.github/workflows/release.yml`): Triggered by `v*` tags. Cross-builds for Linux amd64/arm64, macOS amd64/arm64 (separate runners for CGO), publishes GitHub release with all binaries.
+- **CI** (`.github/workflows/ci.yml`): Runs on PRs and pushes to `main`. Builds + tests on Linux (ubuntu-latest) and macOS (macos-latest ARM64 only).
+- **Release** (`.github/workflows/release.yml`): Triggered by `v*` tags. Cross-builds for Linux amd64/arm64, macOS arm64 only, publishes GitHub release with all binaries.
 - **Kernel** (`.github/workflows/kernel.yml`): Builds and publishes kernel images to GHCR.
 
 ## CLI Usage

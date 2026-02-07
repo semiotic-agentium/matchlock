@@ -1,0 +1,519 @@
+//go:build acceptance
+
+package acceptance
+
+import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"strings"
+	"testing"
+	"time"
+)
+
+func matchlockBin(t *testing.T) string {
+	t.Helper()
+	if bin := os.Getenv("MATCHLOCK_BIN"); bin != "" {
+		return bin
+	}
+	return "matchlock"
+}
+
+func runCLI(t *testing.T, args ...string) (string, string, int) {
+	t.Helper()
+	bin := matchlockBin(t)
+	cmd := exec.Command(bin, args...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	exitCode := 0
+	if err != nil {
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		} else {
+			t.Fatalf("failed to run %s %v: %v", bin, args, err)
+		}
+	}
+	return stdout.String(), stderr.String(), exitCode
+}
+
+// runCLIWithTimeout runs the CLI with a timeout and returns stdout, stderr, exit code.
+func runCLIWithTimeout(t *testing.T, timeout time.Duration, args ...string) (string, string, int) {
+	t.Helper()
+	bin := matchlockBin(t)
+	cmd := exec.Command(bin, args...)
+	var stdout, stderr strings.Builder
+	cmd.Stdout = &stdout
+	cmd.Stderr = &stderr
+
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start %s %v: %v", bin, args, err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- cmd.Wait() }()
+
+	select {
+	case err := <-done:
+		exitCode := 0
+		if err != nil {
+			if exitErr, ok := err.(*exec.ExitError); ok {
+				exitCode = exitErr.ExitCode()
+			}
+		}
+		return stdout.String(), stderr.String(), exitCode
+	case <-time.After(timeout):
+		cmd.Process.Kill()
+		t.Fatalf("command timed out: %s %v", bin, args)
+		return "", "", -1
+	}
+}
+
+// ---------------------------------------------------------------------------
+// version
+// ---------------------------------------------------------------------------
+
+func TestCLIVersion(t *testing.T) {
+	stdout, _, exitCode := runCLI(t, "version")
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", exitCode)
+	}
+	if !strings.HasPrefix(stdout, "matchlock ") {
+		t.Errorf("stdout = %q, want prefix 'matchlock '", stdout)
+	}
+	if !strings.Contains(stdout, "commit:") {
+		t.Errorf("stdout = %q, want to contain 'commit:'", stdout)
+	}
+}
+
+func TestCLIVersionFlag(t *testing.T) {
+	stdout, _, exitCode := runCLI(t, "--version")
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", exitCode)
+	}
+	if !strings.Contains(stdout, "matchlock") {
+		t.Errorf("stdout = %q, want to contain 'matchlock'", stdout)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// build
+// ---------------------------------------------------------------------------
+
+func TestCLIBuild(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 5*time.Minute, "build", "alpine:latest")
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0; stdout: %s", exitCode, stdout)
+	}
+	if !strings.Contains(stdout, "Built:") && !strings.Contains(stdout, "rootfs") {
+		t.Errorf("expected build output, got: %s", stdout)
+	}
+}
+
+func TestCLIBuildMissingImage(t *testing.T) {
+	_, _, exitCode := runCLI(t, "build")
+	if exitCode == 0 {
+		t.Errorf("expected non-zero exit code for missing image arg")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// run (with --rm, the default)
+// ---------------------------------------------------------------------------
+
+func TestCLIRunEchoHello(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute, "run", "--image", "alpine:latest", "echo", "hello")
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", exitCode)
+	}
+	if !strings.Contains(stdout, "hello") {
+		t.Errorf("stdout = %q, want to contain 'hello'", stdout)
+	}
+}
+
+func TestCLIRunCatOsRelease(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute, "run", "--image", "alpine:latest", "cat", "/etc/os-release")
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", exitCode)
+	}
+	if !strings.Contains(stdout, "Alpine") {
+		t.Errorf("expected Alpine in os-release output, got: %s", stdout)
+	}
+}
+
+func TestCLIRunMissingImage(t *testing.T) {
+	_, _, exitCode := runCLI(t, "run", "echo", "hello")
+	if exitCode == 0 {
+		t.Errorf("expected non-zero exit code when --image is missing")
+	}
+}
+
+func TestCLIRunNoCommand(t *testing.T) {
+	_, stderr, exitCode := runCLI(t, "run", "--image", "alpine:latest")
+	if exitCode == 0 {
+		t.Errorf("expected non-zero exit code when command is missing and --rm=true")
+	}
+	if !strings.Contains(stderr, "command required") {
+		t.Errorf("stderr = %q, want to contain 'command required'", stderr)
+	}
+}
+
+func TestCLIRunMultiWordCommand(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute, "run", "--image", "alpine:latest", "sh", "-c", "echo foo bar")
+	if exitCode != 0 {
+		t.Fatalf("exit code = %d, want 0", exitCode)
+	}
+	if !strings.Contains(stdout, "foo bar") {
+		t.Errorf("stdout = %q, want to contain 'foo bar'", stdout)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// run --rm=false + exec + kill + rm (full lifecycle)
+// ---------------------------------------------------------------------------
+
+func TestCLILifecycle(t *testing.T) {
+	bin := matchlockBin(t)
+
+	// Start a sandbox with --rm=false (it stays alive)
+	cmd := exec.Command(bin, "run", "--image", "alpine:latest", "--rm=false")
+	var runStderr strings.Builder
+	cmd.Stderr = &runStderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start run: %v", err)
+	}
+	runPID := cmd.Process.Pid
+
+	// Wait for the sandbox to register and become visible in "list"
+	var vmID string
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+		stdout, _, _ := runCLI(t, "list", "--running")
+		for _, line := range strings.Split(stdout, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && strings.HasPrefix(fields[0], "vm-") && fields[1] == "running" {
+				vmID = fields[0]
+				break
+			}
+		}
+		if vmID != "" {
+			break
+		}
+	}
+	if vmID == "" {
+		cmd.Process.Kill()
+		t.Fatalf("timed out waiting for sandbox to appear in list. stderr: %s", runStderr.String())
+	}
+
+	t.Cleanup(func() {
+		// Ensure cleanup even if test fails partway
+		exec.Command(bin, "kill", vmID).Run()
+		// Wait for the run process to exit after kill
+		time.Sleep(2 * time.Second)
+		exec.Command(bin, "rm", vmID).Run()
+		// Kill the process if it's still alive
+		if p, err := os.FindProcess(runPID); err == nil {
+			p.Kill()
+		}
+	})
+
+	// --- list ---
+	t.Run("list", func(t *testing.T) {
+		stdout, _, exitCode := runCLI(t, "list")
+		if exitCode != 0 {
+			t.Fatalf("list exit code = %d", exitCode)
+		}
+		if !strings.Contains(stdout, vmID) {
+			t.Errorf("list output should contain %s, got: %s", vmID, stdout)
+		}
+		if !strings.Contains(stdout, "running") {
+			t.Errorf("list output should show 'running' status, got: %s", stdout)
+		}
+	})
+
+	// --- list --running ---
+	t.Run("list-running", func(t *testing.T) {
+		stdout, _, exitCode := runCLI(t, "list", "--running")
+		if exitCode != 0 {
+			t.Fatalf("list --running exit code = %d", exitCode)
+		}
+		if !strings.Contains(stdout, vmID) {
+			t.Errorf("list --running should contain %s, got: %s", vmID, stdout)
+		}
+	})
+
+	// --- get ---
+	t.Run("get", func(t *testing.T) {
+		stdout, _, exitCode := runCLI(t, "get", vmID)
+		if exitCode != 0 {
+			t.Fatalf("get exit code = %d", exitCode)
+		}
+		var state map[string]interface{}
+		if err := json.Unmarshal([]byte(stdout), &state); err != nil {
+			t.Fatalf("get output is not valid JSON: %v\noutput: %s", err, stdout)
+		}
+		if state["id"] != vmID {
+			t.Errorf("get id = %v, want %s", state["id"], vmID)
+		}
+		if state["status"] != "running" {
+			t.Errorf("get status = %v, want running", state["status"])
+		}
+	})
+
+	// --- exec ---
+	t.Run("exec", func(t *testing.T) {
+		stdout, _, exitCode := runCLIWithTimeout(t, 30*time.Second, "exec", vmID, "echo", "from-exec")
+		if exitCode != 0 {
+			t.Fatalf("exec exit code = %d", exitCode)
+		}
+		if !strings.Contains(stdout, "from-exec") {
+			t.Errorf("exec stdout = %q, want to contain 'from-exec'", stdout)
+		}
+	})
+
+	// --- exec multiple commands ---
+	t.Run("exec-multi", func(t *testing.T) {
+		stdout, _, exitCode := runCLIWithTimeout(t, 30*time.Second, "exec", vmID, "sh", "-c", "echo one && echo two")
+		if exitCode != 0 {
+			t.Fatalf("exec exit code = %d", exitCode)
+		}
+		if !strings.Contains(stdout, "one") || !strings.Contains(stdout, "two") {
+			t.Errorf("exec stdout = %q, want 'one' and 'two'", stdout)
+		}
+	})
+
+	// --- kill ---
+	t.Run("kill", func(t *testing.T) {
+		stdout, _, exitCode := runCLI(t, "kill", vmID)
+		if exitCode != 0 {
+			t.Fatalf("kill exit code = %d", exitCode)
+		}
+		if !strings.Contains(stdout, "Killed") {
+			t.Errorf("kill output = %q, want to contain 'Killed'", stdout)
+		}
+
+		// Wait for the process to die and status to update
+		time.Sleep(3 * time.Second)
+
+		// Verify it's no longer running
+		stdout2, _, _ := runCLI(t, "list", "--running")
+		if strings.Contains(stdout2, vmID) {
+			t.Errorf("VM %s should not appear in running list after kill", vmID)
+		}
+	})
+
+	// --- rm ---
+	t.Run("rm", func(t *testing.T) {
+		stdout, _, exitCode := runCLI(t, "rm", vmID)
+		if exitCode != 0 {
+			t.Fatalf("rm exit code = %d", exitCode)
+		}
+		if !strings.Contains(stdout, "Removed") {
+			t.Errorf("rm output = %q, want to contain 'Removed'", stdout)
+		}
+
+		// Verify it's gone from list
+		stdout2, _, _ := runCLI(t, "list")
+		if strings.Contains(stdout2, vmID) {
+			t.Errorf("VM %s should not appear in list after rm", vmID)
+		}
+	})
+}
+
+// ---------------------------------------------------------------------------
+// get (non-existent VM)
+// ---------------------------------------------------------------------------
+
+func TestCLIGetNonExistent(t *testing.T) {
+	_, _, exitCode := runCLI(t, "get", "vm-nonexistent")
+	// get on non-existent VM should still work (returns empty/error data)
+	// but we mainly verify it doesn't crash
+	_ = exitCode
+}
+
+// ---------------------------------------------------------------------------
+// kill (no args)
+// ---------------------------------------------------------------------------
+
+func TestCLIKillNoArgs(t *testing.T) {
+	_, stderr, exitCode := runCLI(t, "kill")
+	if exitCode == 0 {
+		t.Errorf("expected non-zero exit code when no VM ID provided")
+	}
+	if !strings.Contains(stderr, "VM ID required") {
+		t.Errorf("stderr = %q, want to contain 'VM ID required'", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// rm (no args)
+// ---------------------------------------------------------------------------
+
+func TestCLIRmNoArgs(t *testing.T) {
+	_, stderr, exitCode := runCLI(t, "rm")
+	if exitCode == 0 {
+		t.Errorf("expected non-zero exit code when no VM ID provided")
+	}
+	if !strings.Contains(stderr, "VM ID required") {
+		t.Errorf("stderr = %q, want to contain 'VM ID required'", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// exec (no args / missing VM)
+// ---------------------------------------------------------------------------
+
+func TestCLIExecNoArgs(t *testing.T) {
+	_, _, exitCode := runCLI(t, "exec")
+	if exitCode == 0 {
+		t.Errorf("expected non-zero exit code when no args provided")
+	}
+}
+
+func TestCLIExecNonExistentVM(t *testing.T) {
+	_, stderr, exitCode := runCLI(t, "exec", "vm-nonexistent", "echo", "hi")
+	if exitCode == 0 {
+		t.Errorf("expected non-zero exit code for non-existent VM")
+	}
+	if !strings.Contains(stderr, "not found") {
+		t.Errorf("stderr = %q, want to contain 'not found'", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// prune (idempotent — just verify it runs)
+// ---------------------------------------------------------------------------
+
+func TestCLIPrune(t *testing.T) {
+	stdout, _, exitCode := runCLI(t, "prune")
+	if exitCode != 0 {
+		t.Fatalf("prune exit code = %d", exitCode)
+	}
+	if !strings.Contains(stdout, "Pruned") {
+		t.Errorf("prune output = %q, want to contain 'Pruned'", stdout)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// run with --rm=false and no command (start only, then kill)
+// ---------------------------------------------------------------------------
+
+func TestCLIRunRmFalseNoCommand(t *testing.T) {
+	bin := matchlockBin(t)
+
+	cmd := exec.Command(bin, "run", "--image", "alpine:latest", "--rm=false")
+	var stderr strings.Builder
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("failed to start: %v", err)
+	}
+	runPID := cmd.Process.Pid
+
+	// Wait for the sandbox to come up
+	var vmID string
+	deadline := time.Now().Add(2 * time.Minute)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+		stdout, _, _ := runCLI(t, "list", "--running")
+		for _, line := range strings.Split(stdout, "\n") {
+			fields := strings.Fields(line)
+			if len(fields) >= 2 && strings.HasPrefix(fields[0], "vm-") && fields[1] == "running" {
+				vmID = fields[0]
+				break
+			}
+		}
+		if vmID != "" {
+			break
+		}
+	}
+
+	t.Cleanup(func() {
+		if vmID != "" {
+			exec.Command(bin, "kill", vmID).Run()
+			time.Sleep(2 * time.Second)
+			exec.Command(bin, "rm", vmID).Run()
+		}
+		if p, err := os.FindProcess(runPID); err == nil {
+			p.Kill()
+		}
+	})
+
+	if vmID == "" {
+		t.Fatalf("timed out waiting for sandbox; stderr: %s", stderr.String())
+	}
+
+	// Verify we can exec into it
+	stdout, _, exitCode := runCLIWithTimeout(t, 30*time.Second, "exec", vmID, "echo", "alive")
+	if exitCode != 0 {
+		t.Fatalf("exec exit code = %d", exitCode)
+	}
+	if !strings.Contains(stdout, "alive") {
+		t.Errorf("exec stdout = %q, want 'alive'", stdout)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// list (with alias)
+// ---------------------------------------------------------------------------
+
+func TestCLIListAlias(t *testing.T) {
+	stdout, _, exitCode := runCLI(t, "ls")
+	if exitCode != 0 {
+		t.Fatalf("ls exit code = %d", exitCode)
+	}
+	if !strings.Contains(stdout, "ID") {
+		t.Errorf("ls output should contain header, got: %s", stdout)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// help
+// ---------------------------------------------------------------------------
+
+func TestCLIHelp(t *testing.T) {
+	stdout, _, exitCode := runCLI(t, "--help")
+	if exitCode != 0 {
+		t.Fatalf("--help exit code = %d", exitCode)
+	}
+	for _, sub := range []string{"run", "exec", "build", "list", "get", "kill", "rm", "prune", "rpc", "version"} {
+		if !strings.Contains(stdout, sub) {
+			t.Errorf("help output should mention %q subcommand", sub)
+		}
+	}
+}
+
+func TestCLIRunHelp(t *testing.T) {
+	stdout, _, exitCode := runCLI(t, "run", "--help")
+	if exitCode != 0 {
+		t.Fatalf("run --help exit code = %d", exitCode)
+	}
+	for _, flag := range []string{"--image", "--cpus", "--memory", "--timeout", "--disk-size", "--allow-host", "--secret", "--rm"} {
+		if !strings.Contains(stdout, flag) {
+			t.Errorf("run --help should mention %q flag", flag)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// kill --all (should succeed even with nothing running)
+// ---------------------------------------------------------------------------
+
+func TestCLIKillAll(t *testing.T) {
+	_, _, exitCode := runCLI(t, "kill", "--all")
+	if exitCode != 0 {
+		t.Errorf("kill --all exit code = %d, want 0", exitCode)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// rm --stopped (should succeed even with nothing stopped)
+// ---------------------------------------------------------------------------
+
+func TestCLIRmStopped(t *testing.T) {
+	_, _, exitCode := runCLI(t, "rm", "--stopped")
+	if exitCode != 0 {
+		t.Errorf("rm --stopped exit code = %d, want 0", exitCode)
+	}
+}

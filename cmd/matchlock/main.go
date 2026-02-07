@@ -82,11 +82,12 @@ Wildcard Patterns for --allow-host:
 }
 
 var buildCmd = &cobra.Command{
-	Use:     "build <image>",
-	Short:   "Build rootfs from container image",
-	Example: `  matchlock build alpine:latest`,
-	Args:    cobra.ExactArgs(1),
-	RunE:    runBuild,
+	Use:   "build <image>",
+	Short: "Build rootfs from container image",
+	Example: `  matchlock build alpine:latest
+  matchlock build -t myapp:latest alpine:latest`,
+	Args: cobra.ExactArgs(1),
+	RunE: runBuild,
 }
 
 var listCmd = &cobra.Command{
@@ -177,6 +178,7 @@ func init() {
 	execCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: workspace path)")
 
 	buildCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
+	buildCmd.Flags().StringP("tag", "t", "", "Tag the image locally")
 
 	listCmd.Flags().Bool("running", false, "Show only running VMs")
 	viper.BindPFlag("list.running", listCmd.Flags().Lookup("running"))
@@ -459,6 +461,7 @@ func runExecInteractive(ctx context.Context, execSocketPath, command, workdir st
 func runBuild(cmd *cobra.Command, args []string) error {
 	imageRef := args[0]
 	pull, _ := cmd.Flags().GetBool("pull")
+	tag, _ := cmd.Flags().GetString("tag")
 
 	builder := image.NewBuilder(&image.BuildOptions{
 		ForcePull: pull,
@@ -471,6 +474,13 @@ func runBuild(cmd *cobra.Command, args []string) error {
 	result, err := builder.Build(ctx, imageRef)
 	if err != nil {
 		return err
+	}
+
+	if tag != "" {
+		if err := builder.SaveTag(tag, result); err != nil {
+			return fmt.Errorf("saving tag: %w", err)
+		}
+		fmt.Printf("Tagged: %s\n", tag)
 	}
 
 	fmt.Printf("Built: %s\n", result.RootfsPath)

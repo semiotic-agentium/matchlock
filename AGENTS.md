@@ -303,6 +303,7 @@ Required kernel options for Firecracker v1.8+:
 - `CONFIG_FUSE_FS=y` - VFS support
 - `CONFIG_IP_PNP=y` - Required for kernel `ip=` boot parameter (network configuration)
 - `CONFIG_CGROUPS=y` - Cgroup support (v1 and v2) with cpu, memory, pids, io, cpuset, freezer controllers
+- `CONFIG_USER_NS=y` - User namespaces for rootless BuildKit support
 
 ## Configuration
 

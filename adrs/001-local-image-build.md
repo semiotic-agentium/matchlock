@@ -1,6 +1,6 @@
 # ADR-001: Local Image Build and Management
 
-**Status:** Proposed  
+**Status:** Accepted (Phase 1 implemented)  
 **Date:** 2026-02-07  
 **Author:** Jingkai He
 
@@ -34,7 +34,7 @@ The guest agent applies the following restrictions to sandboxed processes:
 | `overlayfs` | ✅ Kernel has `CONFIG_OVERLAY_FS=y` |
 | `CAP_SYS_ADMIN` (mount, overlay) | ❌ Dropped by guest-agent |
 | `no_new_privs` bypass | ❌ Set unconditionally |
-| User namespaces (rootless BuildKit) | ❌ `CONFIG_USER_NS` not in kernel config |
+| User namespaces (rootless BuildKit) | ✅ `CONFIG_USER_NS=y` added to kernel config |
 | Container runtime (`runc`) | ❌ Not injected into rootfs |
 
 Running BuildKit inside the VM requires relaxing the security model (privileged mode) and adding kernel support for user namespaces. This is acceptable because the micro-VM itself is the primary security boundary — the in-guest seccomp/capability restrictions are defence-in-depth, not the isolation primitive.
@@ -98,7 +98,7 @@ Add a `--privileged` flag that skips in-guest security restrictions, enabling Bu
 1. **`pkg/api/config.go`** — Add `Privileged bool` to `Config`
 2. **Guest agent protocol** — Pass privileged flag via kernel cmdline (`matchlock.privileged=1`)
 3. **`cmd/guest-agent/sandbox_proc.go`** — When privileged, skip capability drops, seccomp filter, and `no_new_privs`
-4. **Kernel config** — Add `CONFIG_USER_NS=y` to both `arm64.config` and `x86_64.config` for rootless BuildKit support
+4. ~~**Kernel config** — Add `CONFIG_USER_NS=y` to both `arm64.config` and `x86_64.config` for rootless BuildKit support~~ ✅ Done
 
 **Usage:**
 

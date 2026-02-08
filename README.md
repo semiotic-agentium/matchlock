@@ -100,7 +100,13 @@ client.WriteFile("/workspace/ask.py", script)
 client.ExecStream("uv run /workspace/ask.py", os.Stdout, os.Stderr)
 ```
 
-**Python**
+**Python** ([PyPI](https://pypi.org/project/matchlock/))
+
+```bash
+pip install matchlock
+# or
+uv add matchlock
+```
 
 ```python
 from matchlock import Client, Config, Sandbox

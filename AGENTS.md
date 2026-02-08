@@ -120,6 +120,9 @@ matchlock run --image alpine:latest -it sh
 # With network allowlist
 matchlock run --image python:3.12-alpine --allow-host "api.openai.com" python agent.py
 
+# With custom DNS servers (default: 8.8.8.8, 8.8.4.4)
+matchlock run --image alpine:latest --dns-servers "1.1.1.1,1.0.0.1" cat /etc/resolv.conf
+
 # With secrets (MITM proxy replaces placeholder with real value)
 export ANTHROPIC_API_KEY=sk-xxx
 matchlock run --image python:3.12-alpine \
@@ -218,10 +221,10 @@ matchlock rpc
 ### Network Stack (`pkg/net`)
 
 **Linux:**
-- `TransparentProxy`: nftables DNAT redirects ports 80/443 to host proxy, uses `SO_ORIGINAL_DST` to recover original destination
-- `NFTablesRules`: Manages PREROUTING DNAT and FORWARD rules via netlink (no shell commands)
+- `TransparentProxy`: nftables DNAT redirects ports 80/443 to HTTP/HTTPS proxy, all other TCP to passthrough proxy; uses `SO_ORIGINAL_DST` to recover original destination
+- `NFTablesRules`: Manages PREROUTING DNAT and FORWARD rules via netlink (no shell commands). Port 80→HTTP handler, port 443→HTTPS handler, catch-all→passthrough handler (policy-gated raw TCP relay)
 - NAT masquerade auto-detects default interface
-- Kernel handles TCP/IP; only HTTP/HTTPS traffic goes through userspace
+- Kernel handles TCP/IP; HTTP/HTTPS traffic goes through MITM inspection, non-standard ports go through policy-gated passthrough
 
 **macOS (two modes):**
 - **NAT mode** (default): Uses Apple Virtualization.framework's built-in NAT with DHCP — no traffic interception, simplest path for unrestricted networking

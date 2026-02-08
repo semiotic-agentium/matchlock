@@ -19,20 +19,30 @@ const (
 )
 
 type NFTablesRules struct {
-	tapInterface string
-	gatewayIP    net.IP
-	httpPort     uint16
-	httpsPort    uint16
-	conn         *nftables.Conn
-	table        *nftables.Table
+	tapInterface    string
+	gatewayIP       net.IP
+	httpPort        uint16
+	httpsPort       uint16
+	passthroughPort uint16
+	dnsServers      []net.IP
+	conn            *nftables.Conn
+	table           *nftables.Table
 }
 
-func NewNFTablesRules(tapInterface, gatewayIP string, httpPort, httpsPort int) *NFTablesRules {
+func NewNFTablesRules(tapInterface, gatewayIP string, httpPort, httpsPort, passthroughPort int, dnsServers []string) *NFTablesRules {
+	var dnsIPs []net.IP
+	for _, s := range dnsServers {
+		if ip := net.ParseIP(s).To4(); ip != nil {
+			dnsIPs = append(dnsIPs, ip)
+		}
+	}
 	return &NFTablesRules{
-		tapInterface: tapInterface,
-		gatewayIP:    net.ParseIP(gatewayIP).To4(),
-		httpPort:     uint16(httpPort),
-		httpsPort:    uint16(httpsPort),
+		tapInterface:    tapInterface,
+		gatewayIP:       net.ParseIP(gatewayIP).To4(),
+		httpPort:        uint16(httpPort),
+		httpsPort:       uint16(httpsPort),
+		passthroughPort: uint16(passthroughPort),
+		dnsServers:      dnsIPs,
 	}
 }
 
@@ -64,33 +74,55 @@ func (r *NFTablesRules) Setup() error {
 		Priority: nftables.ChainPriorityFilter,
 	})
 
-	ifaceIdx, err := getInterfaceIndex(r.tapInterface)
-	if err != nil {
-		return fmt.Errorf("failed to get interface index for %s: %w", r.tapInterface, err)
+	conn.AddRule(&nftables.Rule{
+		Table: r.table,
+		Chain: preChain,
+		Exprs: r.buildDNATRule(80, r.httpPort),
+	})
+
+	conn.AddRule(&nftables.Rule{
+		Table: r.table,
+		Chain: preChain,
+		Exprs: r.buildDNATRule(443, r.httpsPort),
+	})
+
+	if r.passthroughPort > 0 {
+		conn.AddRule(&nftables.Rule{
+			Table: r.table,
+			Chain: preChain,
+			Exprs: r.buildCatchAllDNATRule(r.passthroughPort),
+		})
 	}
 
-	conn.AddRule(&nftables.Rule{
-		Table: r.table,
-		Chain: preChain,
-		Exprs: r.buildDNATRule(ifaceIdx, 80, r.httpPort),
-	})
+	// Allow DNS (UDP port 53) from the VM to configured resolvers only.
+	// Must come before the UDP drop rule. Restricting destination IPs
+	// prevents DNS tunneling to attacker-controlled nameservers.
+	for _, dnsIP := range r.dnsServers {
+		conn.AddRule(&nftables.Rule{
+			Table: r.table,
+			Chain: fwdChain,
+			Exprs: r.buildUDPDNSAcceptRule(dnsIP),
+		})
+	}
 
+	// Drop all other UDP from the VM to match macOS behavior where gVisor
+	// silently discards non-DNS UDP. This prevents UDP-based data exfiltration.
 	conn.AddRule(&nftables.Rule{
 		Table: r.table,
-		Chain: preChain,
-		Exprs: r.buildDNATRule(ifaceIdx, 443, r.httpsPort),
+		Chain: fwdChain,
+		Exprs: r.buildUDPDropRule(),
 	})
 
 	conn.AddRule(&nftables.Rule{
 		Table: r.table,
 		Chain: fwdChain,
-		Exprs: r.buildForwardRule(ifaceIdx, true),
+		Exprs: r.buildForwardRule(true),
 	})
 
 	conn.AddRule(&nftables.Rule{
 		Table: r.table,
 		Chain: fwdChain,
-		Exprs: r.buildForwardRule(ifaceIdx, false),
+		Exprs: r.buildForwardRule(false),
 	})
 
 	if err := conn.Flush(); err != nil {
@@ -100,7 +132,7 @@ func (r *NFTablesRules) Setup() error {
 	return nil
 }
 
-func (r *NFTablesRules) buildDNATRule(ifaceIdx uint32, srcPort, dstPort uint16) []expr.Any {
+func (r *NFTablesRules) buildDNATRule(srcPort, dstPort uint16) []expr.Any {
 	return []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
 		&expr.Cmp{
@@ -142,7 +174,41 @@ func (r *NFTablesRules) buildDNATRule(ifaceIdx uint32, srcPort, dstPort uint16) 
 	}
 }
 
-func (r *NFTablesRules) buildForwardRule(ifaceIdx uint32, isInput bool) []expr.Any {
+// buildCatchAllDNATRule redirects all TCP traffic from the TAP interface to the
+// passthrough proxy port. This rule must be added after port-specific DNAT rules
+// (80→HTTP, 443→HTTPS) so they match first; this catches everything else.
+func (r *NFTablesRules) buildCatchAllDNATRule(dstPort uint16) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     ifname(r.tapInterface),
+		},
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{unix.IPPROTO_TCP},
+		},
+		&expr.Immediate{
+			Register: 1,
+			Data:     r.gatewayIP,
+		},
+		&expr.Immediate{
+			Register: 2,
+			Data:     binaryutil.BigEndian.PutUint16(dstPort),
+		},
+		&expr.NAT{
+			Type:        expr.NATTypeDestNAT,
+			Family:      unix.NFPROTO_IPV4,
+			RegAddrMin:  1,
+			RegProtoMin: 2,
+		},
+	}
+}
+
+func (r *NFTablesRules) buildForwardRule(isInput bool) []expr.Any {
 	metaKey := expr.MetaKeyIIFNAME
 	if !isInput {
 		metaKey = expr.MetaKeyOIFNAME
@@ -156,6 +222,70 @@ func (r *NFTablesRules) buildForwardRule(ifaceIdx uint32, isInput bool) []expr.A
 			Data:     ifname(r.tapInterface),
 		},
 		&expr.Verdict{Kind: expr.VerdictAccept},
+	}
+}
+
+// buildUDPDNSAcceptRule accepts UDP port 53 traffic from the TAP interface
+// to a specific destination IP (e.g. 8.8.8.8).
+func (r *NFTablesRules) buildUDPDNSAcceptRule(dstIP net.IP) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     ifname(r.tapInterface),
+		},
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{unix.IPPROTO_UDP},
+		},
+		// Match destination IP
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseNetworkHeader,
+			Offset:       16,
+			Len:          4,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     dstIP.To4(),
+		},
+		// Match destination port 53
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       2,
+			Len:          2,
+		},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     binaryutil.BigEndian.PutUint16(53),
+		},
+		&expr.Verdict{Kind: expr.VerdictAccept},
+	}
+}
+
+// buildUDPDropRule drops all UDP traffic from the TAP interface. Must be placed
+// after any port-specific UDP accept rules (e.g. DNS on port 53).
+func (r *NFTablesRules) buildUDPDropRule() []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyIIFNAME, Register: 1},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     ifname(r.tapInterface),
+		},
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     []byte{unix.IPPROTO_UDP},
+		},
+		&expr.Verdict{Kind: expr.VerdictDrop},
 	}
 }
 
@@ -182,14 +312,6 @@ func (r *NFTablesRules) Cleanup() error {
 	}
 
 	return r.conn.Flush()
-}
-
-func getInterfaceIndex(name string) (uint32, error) {
-	iface, err := net.InterfaceByName(name)
-	if err != nil {
-		return 0, err
-	}
-	return uint32(iface.Index), nil
 }
 
 func ifname(n string) []byte {

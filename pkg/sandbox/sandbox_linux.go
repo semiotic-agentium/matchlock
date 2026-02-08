@@ -155,6 +155,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		Workspace:  workspace,
 		Privileged: config.Privileged,
 		ExtraDisks: extraDisks,
+		DNSServers: config.Network.GetDNSServers(),
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
@@ -193,18 +194,20 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	const proxyBindAddr = "0.0.0.0"
 	const httpPort = 18080
 	const httpsPort = 18443
+	const passthroughPort = 18081
 
 	var proxy *sandboxnet.TransparentProxy
 	var fwRules FirewallRules
 
 	if needsProxy {
 		proxy, err = sandboxnet.NewTransparentProxy(&sandboxnet.ProxyConfig{
-			BindAddr:  proxyBindAddr,
-			HTTPPort:  httpPort,
-			HTTPSPort: httpsPort,
-			Policy:    policyEngine,
-			Events:    events,
-			CAPool:    caPool,
+			BindAddr:        proxyBindAddr,
+			HTTPPort:        httpPort,
+			HTTPSPort:       httpsPort,
+			PassthroughPort: passthroughPort,
+			Policy:          policyEngine,
+			Events:          events,
+			CAPool:          caPool,
 		})
 		if err != nil {
 			machine.Close()
@@ -215,7 +218,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 
 		proxy.Start()
 
-		fwRules = sandboxnet.NewNFTablesRules(linuxMachine.TapName(), gatewayIP, httpPort, httpsPort)
+		fwRules = sandboxnet.NewNFTablesRules(linuxMachine.TapName(), gatewayIP, httpPort, httpsPort, passthroughPort, config.Network.GetDNSServers())
 		if err := fwRules.Setup(); err != nil {
 			proxy.Close()
 			machine.Close()

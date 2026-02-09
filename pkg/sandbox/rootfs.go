@@ -239,7 +239,7 @@ func resizeRootfs(rootfsPath string, sizeMB int64) error {
 	return nil
 }
 
-// injectConfigFileIntoRootfs writes a config file with 0644into an ext4 image using debugfs.
+// injectConfigFileIntoRootfs writes a config file with 0644 into an ext4 image using debugfs.
 // This allows injecting files (like CA certs) without mounting the filesystem.
 // Requires debugfs to be installed (part of e2fsprogs).
 func injectConfigFileIntoRootfs(rootfsPath, guestPath string, content []byte) error {

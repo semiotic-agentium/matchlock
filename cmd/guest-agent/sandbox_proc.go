@@ -225,6 +225,10 @@ func runSandboxLauncher() {
 			fmt.Fprintf(os.Stderr, "matchlock: resolve user %q: %v\n", userSpec, err)
 			os.Exit(127)
 		}
+		if err := syscall.Setgroups([]int{gid}); err != nil {
+			fmt.Fprintf(os.Stderr, "matchlock: setgroups([%d]): %v\n", gid, err)
+			os.Exit(127)
+		}
 		if err := syscall.Setgid(gid); err != nil {
 			fmt.Fprintf(os.Stderr, "matchlock: setgid(%d): %v\n", gid, err)
 			os.Exit(127)
@@ -296,28 +300,29 @@ func wrapCommandForSandbox(cmd *exec.Cmd) {
 // resolveUser resolves a user spec ("uid", "uid:gid", or "username") to numeric
 // UID, GID, and home directory by parsing /etc/passwd and /etc/group.
 func resolveUser(spec string) (uid, gid int, homeDir string, err error) {
-	// Handle "uid:gid" format
+	return resolveUserFrom(spec, "/etc/passwd", "/etc/group")
+}
+
+func resolveUserFrom(spec, passwdPath, groupPath string) (uid, gid int, homeDir string, err error) {
 	if parts := strings.SplitN(spec, ":", 2); len(parts) == 2 {
-		uid, err = resolveUID(parts[0])
+		uid, err = resolveUIDFrom(parts[0], passwdPath)
 		if err != nil {
 			return 0, 0, "", fmt.Errorf("resolve uid %q: %w", parts[0], err)
 		}
-		gid, err = resolveGID(parts[1])
+		gid, err = resolveGIDFrom(parts[1], groupPath)
 		if err != nil {
 			return 0, 0, "", fmt.Errorf("resolve gid %q: %w", parts[1], err)
 		}
-		_, _, homeDir = lookupPasswdByUID(uid)
+		_, _, homeDir = lookupPasswdByUIDFrom(uid, passwdPath)
 		return uid, gid, homeDir, nil
 	}
 
-	// Try numeric UID
 	if n, err := strconv.Atoi(spec); err == nil {
-		gid, _, homeDir = lookupPasswdByUID(n)
+		gid, _, homeDir = lookupPasswdByUIDFrom(n, passwdPath)
 		return n, gid, homeDir, nil
 	}
 
-	// Lookup by username in /etc/passwd
-	uid, gid, homeDir, ok := lookupPasswdByName(spec)
+	uid, gid, homeDir, ok := lookupPasswdByNameFrom(spec, passwdPath)
 	if !ok {
 		return 0, 0, "", fmt.Errorf("user %q not found in /etc/passwd", spec)
 	}
@@ -325,10 +330,14 @@ func resolveUser(spec string) (uid, gid int, homeDir string, err error) {
 }
 
 func resolveUID(s string) (int, error) {
+	return resolveUIDFrom(s, "/etc/passwd")
+}
+
+func resolveUIDFrom(s, passwdPath string) (int, error) {
 	if n, err := strconv.Atoi(s); err == nil {
 		return n, nil
 	}
-	uid, _, _, ok := lookupPasswdByName(s)
+	uid, _, _, ok := lookupPasswdByNameFrom(s, passwdPath)
 	if !ok {
 		return 0, fmt.Errorf("user %q not found", s)
 	}
@@ -336,11 +345,14 @@ func resolveUID(s string) (int, error) {
 }
 
 func resolveGID(s string) (int, error) {
+	return resolveGIDFrom(s, "/etc/group")
+}
+
+func resolveGIDFrom(s, groupPath string) (int, error) {
 	if n, err := strconv.Atoi(s); err == nil {
 		return n, nil
 	}
-	// Lookup group name in /etc/group
-	f, err := os.Open("/etc/group")
+	f, err := os.Open(groupPath)
 	if err != nil {
 		return 0, err
 	}
@@ -351,7 +363,6 @@ func resolveGID(s string) (int, error) {
 		if strings.HasPrefix(line, "#") || line == "" {
 			continue
 		}
-		// group_name:password:GID:user_list
 		fields := strings.SplitN(line, ":", 4)
 		if len(fields) >= 3 && fields[0] == s {
 			gid, err := strconv.Atoi(fields[2])
@@ -365,7 +376,11 @@ func resolveGID(s string) (int, error) {
 
 // lookupPasswdByName returns uid, gid, homeDir, ok for a username from /etc/passwd.
 func lookupPasswdByName(name string) (int, int, string, bool) {
-	f, err := os.Open("/etc/passwd")
+	return lookupPasswdByNameFrom(name, "/etc/passwd")
+}
+
+func lookupPasswdByNameFrom(name, passwdPath string) (int, int, string, bool) {
+	f, err := os.Open(passwdPath)
 	if err != nil {
 		return 0, 0, "", false
 	}
@@ -376,7 +391,6 @@ func lookupPasswdByName(name string) (int, int, string, bool) {
 		if strings.HasPrefix(line, "#") || line == "" {
 			continue
 		}
-		// name:password:uid:gid:gecos:home:shell
 		fields := strings.SplitN(line, ":", 7)
 		if len(fields) >= 6 && fields[0] == name {
 			uid, _ := strconv.Atoi(fields[2])
@@ -389,9 +403,13 @@ func lookupPasswdByName(name string) (int, int, string, bool) {
 
 // lookupPasswdByUID returns gid, shell, homeDir for a UID from /etc/passwd.
 func lookupPasswdByUID(uid int) (gid int, shell string, homeDir string) {
-	f, err := os.Open("/etc/passwd")
+	return lookupPasswdByUIDFrom(uid, "/etc/passwd")
+}
+
+func lookupPasswdByUIDFrom(uid int, passwdPath string) (gid int, shell string, homeDir string) {
+	f, err := os.Open(passwdPath)
 	if err != nil {
-		return 0, "", ""
+		return uid, "", ""
 	}
 	defer f.Close()
 	uidStr := strconv.Itoa(uid)
@@ -408,7 +426,7 @@ func lookupPasswdByUID(uid int) (gid int, shell string, homeDir string) {
 			return gid, shell, fields[5]
 		}
 	}
-	return 0, "", ""
+	return uid, "", ""
 }
 
 // wipeBytes zeros out a byte slice to remove sensitive data from memory.

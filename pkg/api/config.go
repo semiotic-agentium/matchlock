@@ -200,7 +200,11 @@ func (ic *ImageConfig) ComposeCommand(userArgs []string) []string {
 	if len(userArgs) > 0 {
 		return append(result, userArgs...)
 	}
-	return append(result, ic.Cmd...)
+	result = append(result, ic.Cmd...)
+	if len(result) == 0 {
+		return nil
+	}
+	return result
 }
 
 func ParseConfig(data []byte) (*Config, error) {

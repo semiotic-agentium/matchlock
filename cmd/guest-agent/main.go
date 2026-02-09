@@ -203,12 +203,7 @@ func handleExecBatch(fd int, data []byte) {
 		cmd.Env = env
 	}
 
-	if req.User != "" {
-		if cmd.Env == nil {
-			cmd.Env = os.Environ()
-		}
-		cmd.Env = append(cmd.Env, "MATCHLOCK_USER="+req.User)
-	}
+	applyUserEnv(cmd, req.User)
 
 	// Apply sandbox isolation: PID namespace + seccomp + cap drop via re-exec
 	applySandboxSysProcAttr(cmd)
@@ -272,12 +267,7 @@ func handleExecStreamBatch(fd int, data []byte) {
 		cmd.Env = env
 	}
 
-	if req.User != "" {
-		if cmd.Env == nil {
-			cmd.Env = os.Environ()
-		}
-		cmd.Env = append(cmd.Env, "MATCHLOCK_USER="+req.User)
-	}
+	applyUserEnv(cmd, req.User)
 
 	applySandboxSysProcAttr(cmd)
 	wrapCommandForSandbox(cmd)
@@ -360,12 +350,7 @@ func handleExecTTY(fd int, data []byte) {
 		cmd.Env = env
 	}
 
-	if req.User != "" {
-		if cmd.Env == nil {
-			cmd.Env = os.Environ()
-		}
-		cmd.Env = append(cmd.Env, "MATCHLOCK_USER="+req.User)
-	}
+	applyUserEnv(cmd, req.User)
 
 	// Apply sandbox isolation: PID namespace + seccomp + cap drop via re-exec
 	applySandboxSysProcAttr(cmd)
@@ -452,6 +437,16 @@ func handleExecTTY(fd int, data []byte) {
 	// Small delay to ensure exit code is transmitted before closing
 	time.Sleep(100 * time.Millisecond)
 	syscall.Close(fd)
+}
+
+func applyUserEnv(cmd *exec.Cmd, user string) {
+	if user == "" {
+		return
+	}
+	if cmd.Env == nil {
+		cmd.Env = os.Environ()
+	}
+	cmd.Env = append(cmd.Env, "MATCHLOCK_USER="+user)
 }
 
 func sendMessage(fd int, msgType uint8, data []byte) {

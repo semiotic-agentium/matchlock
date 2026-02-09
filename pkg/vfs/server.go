@@ -30,6 +30,10 @@ const (
 	OpReaddir
 	OpFsync
 	OpMkdirAll
+	OpTruncate
+	OpSymlink
+	OpReadlink
+	OpLink
 )
 
 type VFSRequest struct {

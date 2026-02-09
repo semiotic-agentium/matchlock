@@ -76,7 +76,7 @@ func init() {
 	runCmd.Flags().Bool("privileged", false, "Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)")
 	runCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: workspace path)")
 	runCmd.Flags().StringP("user", "u", "", "Run as user (uid, uid:gid, or username; overrides image USER)")
-	runCmd.Flags().StringSlice("entrypoint", nil, "Override image ENTRYPOINT")
+	runCmd.Flags().String("entrypoint", "", "Override image ENTRYPOINT")
 	runCmd.Flags().Duration("graceful-shutdown", api.DefaultGracefulShutdownPeriod, "Graceful shutdown timeout before force-stopping the VM ")
 	runCmd.MarkFlagRequired("image")
 
@@ -127,7 +127,7 @@ func runRun(cmd *cobra.Command, args []string) error {
 	gracefulShutdown, _ := cmd.Flags().GetDuration("graceful-shutdown")
 
 	user, _ := cmd.Flags().GetString("user")
-	entrypoint, _ := cmd.Flags().GetStringSlice("entrypoint")
+	entrypoint, _ := cmd.Flags().GetString("entrypoint")
 
 	command := api.ShellQuoteArgs(args)
 
@@ -174,12 +174,16 @@ func runRun(cmd *cobra.Command, args []string) error {
 		imageCfg.User = user
 	}
 
-	// CLI --entrypoint overrides image ENTRYPOINT
+	// CLI --entrypoint overrides image ENTRYPOINT (single string, like Docker)
 	if cmd.Flags().Changed("entrypoint") {
 		if imageCfg == nil {
 			imageCfg = &api.ImageConfig{}
 		}
-		imageCfg.Entrypoint = entrypoint
+		if entrypoint == "" {
+			imageCfg.Entrypoint = nil
+		} else {
+			imageCfg.Entrypoint = []string{entrypoint}
+		}
 	}
 
 	// Compose command from image ENTRYPOINT/CMD and user args.

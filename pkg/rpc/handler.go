@@ -10,6 +10,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
 )
@@ -498,6 +499,18 @@ func (h *Handler) handleListFiles(ctx context.Context, req *Request) *Response {
 
 func (h *Handler) handleClose(ctx context.Context, req *Request) *Response {
 	h.closed.Store(true)
+
+	var params struct {
+		TimeoutSeconds float64 `json:"timeout_seconds"`
+	}
+	if req.Params != nil {
+		json.Unmarshal(req.Params, &params)
+	}
+	if params.TimeoutSeconds > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(params.TimeoutSeconds*float64(time.Second)))
+		defer cancel()
+	}
 
 	h.vmMu.Lock()
 	vm := h.vm

@@ -104,7 +104,6 @@ func (m *DarwinMachine) stop(ctx context.Context, force bool) error {
 		success, err := m.vm.RequestStop()
 		if err == nil && success {
 			stateChanged := m.vm.StateChangedNotify()
-			timeout := time.After(3 * time.Second)
 		waitLoop:
 			for {
 				if m.vm.State() == vz.VirtualMachineStateStopped {
@@ -115,8 +114,6 @@ func (m *DarwinMachine) stop(ctx context.Context, force bool) error {
 					if m.vm.State() == vz.VirtualMachineStateStopped {
 						break waitLoop
 					}
-				case <-timeout:
-					break waitLoop
 				case <-ctx.Done():
 					break waitLoop
 				}

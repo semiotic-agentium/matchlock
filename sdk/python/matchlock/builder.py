@@ -88,8 +88,22 @@ class Sandbox:
         return self
 
     def with_image_config(self, config: ImageConfig) -> Sandbox:
-        """Set the full image configuration."""
-        self._opts.image_config = config
+        """Merge the given image configuration into any existing config.
+
+        Fields set in *config* override existing values; falsy fields are left unchanged.
+        """
+        if self._opts.image_config is None:
+            self._opts.image_config = ImageConfig()
+        if config.user:
+            self._opts.image_config.user = config.user
+        if config.working_dir:
+            self._opts.image_config.working_dir = config.working_dir
+        if config.entrypoint:
+            self._opts.image_config.entrypoint = config.entrypoint
+        if config.cmd:
+            self._opts.image_config.cmd = config.cmd
+        if config.env:
+            self._opts.image_config.env = config.env
         return self
 
     def options(self) -> CreateOptions:

@@ -122,6 +122,15 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 		return fmt.Errorf("guest-fused not found at %s: %w", guestFusedPath, err)
 	}
 
+	// Resize BEFORE injecting components so that the filesystem has free space.
+	// Images built from large Dockerfiles may have little
+	// free blocks in the ext4 image created by createExt4.
+	if diskSizeMB > 0 {
+		if err := resizeRootfs(rootfsPath, diskSizeMB); err != nil {
+			return fmt.Errorf("resize rootfs: %w", err)
+		}
+	}
+
 	// Write init script to temp file for debugfs injection
 	initTmp, err := os.CreateTemp("", "matchlock-init-*")
 	if err != nil {
@@ -184,13 +193,6 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 		return fmt.Errorf("debugfs inject components: %w: %s", err, output)
 	}
 
-	// Resize if requested
-	if diskSizeMB > 0 {
-		if err := resizeRootfs(rootfsPath, diskSizeMB); err != nil {
-			return fmt.Errorf("resize rootfs: %w", err)
-		}
-	}
-
 	return nil
 }
 
@@ -237,10 +239,10 @@ func resizeRootfs(rootfsPath string, sizeMB int64) error {
 	return nil
 }
 
-// injectFileIntoRootfs writes a file into an ext4 image using debugfs.
+// injectConfigFileIntoRootfs writes a config file with 0644into an ext4 image using debugfs.
 // This allows injecting files (like CA certs) without mounting the filesystem.
 // Requires debugfs to be installed (part of e2fsprogs).
-func injectFileIntoRootfs(rootfsPath, guestPath string, content []byte) error {
+func injectConfigFileIntoRootfs(rootfsPath, guestPath string, content []byte) error {
 	tmpFile, err := os.CreateTemp("", "inject-*")
 	if err != nil {
 		return fmt.Errorf("create temp file: %w", err)
@@ -267,6 +269,7 @@ func injectFileIntoRootfs(rootfsPath, guestPath string, content []byte) error {
 	}
 	commands = append(commands, fmt.Sprintf("rm %s", guestPath))
 	commands = append(commands, fmt.Sprintf("write %s %s", tmpPath, guestPath))
+	commands = append(commands, fmt.Sprintf("set_inode_field %s mode 0100644", guestPath))
 
 	cmdStr := strings.Join(commands, "\n")
 	cmd := exec.Command("debugfs", "-w", rootfsPath)

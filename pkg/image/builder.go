@@ -1,11 +1,12 @@
 package image
 
 import (
+	"archive/tar"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
@@ -125,11 +126,12 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 	}
 	defer os.RemoveAll(extractDir)
 
-	if err := b.extractImage(img, extractDir); err != nil {
+	fileMetas, err := b.extractImage(img, extractDir)
+	if err != nil {
 		return nil, fmt.Errorf("extract image: %w", err)
 	}
 
-	if err := b.createExt4(extractDir, rootfsPath); err != nil {
+	if err := b.createExt4(extractDir, rootfsPath, fileMetas); err != nil {
 		os.Remove(rootfsPath)
 		return nil, fmt.Errorf("create ext4: %w", err)
 	}
@@ -138,7 +140,7 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 
 	fi, _ := os.Stat(rootfsPath)
 
-	meta := ImageMeta{
+	imageMeta := ImageMeta{
 		Tag:       imageRef,
 		Digest:    digest.String(),
 		Size:      fi.Size(),
@@ -146,7 +148,7 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 		Source:    "registry",
 		OCI:      ociConfig,
 	}
-	if metaBytes, err := json.MarshalIndent(meta, "", "  "); err == nil {
+	if metaBytes, err := json.MarshalIndent(imageMeta, "", "  "); err == nil {
 		os.WriteFile(filepath.Join(cacheDir, "metadata.json"), metaBytes, 0644)
 	}
 
@@ -158,19 +160,145 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 	}, nil
 }
 
-func (b *Builder) extractImage(img v1.Image, destDir string) error {
+type fileMeta struct {
+	uid  int
+	gid  int
+	mode os.FileMode
+}
+
+// ensureRealDir ensures that every component of path under root is a real
+// directory, not a symlink. If an intermediate component is a symlink it is
+// replaced with a real directory so that later file creation won't chase
+// symlink chains (which can cause ELOOP on images with deep/circular symlinks).
+func ensureRealDir(root, path string) error {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return err
+	}
+	parts := strings.Split(rel, string(filepath.Separator))
+	cur := root
+	for _, p := range parts {
+		cur = filepath.Join(cur, p)
+		fi, err := os.Lstat(cur)
+		if os.IsNotExist(err) {
+			if err := os.Mkdir(cur, 0755); err != nil {
+				return err
+			}
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			if err := os.Remove(cur); err != nil {
+				return err
+			}
+			if err := os.Mkdir(cur, 0755); err != nil {
+				return err
+			}
+		} else if !fi.IsDir() {
+			if err := os.Remove(cur); err != nil {
+				return err
+			}
+			if err := os.Mkdir(cur, 0755); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// safeCreate creates a file at target ensuring no intermediate symlinks are
+// followed. It uses Lstat + O_NOFOLLOW-style semantics by removing any
+// existing symlink at the final component before creating the file.
+func safeCreate(root, target string, mode os.FileMode) (*os.File, error) {
+	if err := ensureRealDir(root, filepath.Dir(target)); err != nil {
+		return nil, err
+	}
+	fi, err := os.Lstat(target)
+	if err == nil && fi.Mode()&os.ModeSymlink != 0 {
+		os.Remove(target)
+	}
+	return os.OpenFile(target, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, mode)
+}
+
+func (b *Builder) extractImage(img v1.Image, destDir string) (map[string]fileMeta, error) {
 	reader := mutate.Extract(img)
 	defer reader.Close()
 
-	cmd := exec.Command("tar", "-xf", "-", "-C", destDir, "--numeric-owner")
-	cmd.Stdin = reader
-	cmd.Stderr = os.Stderr
+	meta := make(map[string]fileMeta)
+	tr := tar.NewReader(reader)
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("extract tar: %w", err)
+	for {
+		hdr, err := tr.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read tar: %w", err)
+		}
+
+		clean := filepath.Clean(hdr.Name)
+		if strings.Contains(clean, "..") {
+			continue
+		}
+		target := filepath.Join(destDir, clean)
+
+		switch hdr.Typeflag {
+		case tar.TypeDir:
+			if err := ensureRealDir(destDir, target); err != nil {
+				return nil, fmt.Errorf("mkdir %s: %w", clean, err)
+			}
+		case tar.TypeReg:
+			f, err := safeCreate(destDir, target, os.FileMode(hdr.Mode)&0777)
+			if err != nil {
+				return nil, fmt.Errorf("create %s: %w", clean, err)
+			}
+			if _, err := io.Copy(f, tr); err != nil {
+				f.Close()
+				return nil, fmt.Errorf("write %s: %w", clean, err)
+			}
+			f.Close()
+		case tar.TypeSymlink:
+			if err := ensureRealDir(destDir, filepath.Dir(target)); err != nil {
+				return nil, fmt.Errorf("mkdir parent %s: %w", clean, err)
+			}
+			if err := os.RemoveAll(target); err != nil {
+				return nil, fmt.Errorf("remove existing %s: %w", clean, err)
+			}
+			if err := os.Symlink(hdr.Linkname, target); err != nil {
+				return nil, fmt.Errorf("symlink %s: %w", clean, err)
+			}
+		case tar.TypeLink:
+			linkTarget := filepath.Join(destDir, filepath.Clean(hdr.Linkname))
+			if err := ensureRealDir(destDir, filepath.Dir(target)); err != nil {
+				return nil, fmt.Errorf("mkdir parent %s: %w", clean, err)
+			}
+			if err := os.RemoveAll(target); err != nil {
+				return nil, fmt.Errorf("remove existing %s: %w", clean, err)
+			}
+			if err := os.Link(linkTarget, target); err != nil {
+				return nil, fmt.Errorf("hardlink %s: %w", clean, err)
+			}
+		default:
+			continue
+		}
+
+		// Don't record metadata for hardlinks — they share the target's inode,
+		// so set_inode_field would overwrite the original file's permissions.
+		if hdr.Typeflag == tar.TypeLink {
+			continue
+		}
+
+		relPath := "/" + clean
+		meta[relPath] = fileMeta{
+			uid:  hdr.Uid,
+			gid:  hdr.Gid,
+			mode: os.FileMode(hdr.Mode) & 0o7777,
+		}
 	}
 
-	return nil
+	return meta, nil
 }
 
 func (b *Builder) SaveTag(tag string, result *BuildResult) error {
@@ -209,6 +337,61 @@ func extractOCIConfig(img v1.Image) *OCIConfig {
 	}
 
 	return oci
+}
+
+// lstatWalk walks a directory tree using Lstat (not following symlinks) and
+// calls fn for every entry. Errors are silently ignored.
+func lstatWalk(root string, fn func(path string, info os.FileInfo)) {
+	_ = lstatWalkErr(root, func(path string, info os.FileInfo) error {
+		fn(path, info)
+		return nil
+	})
+}
+
+// lstatWalkErr walks a directory tree using Lstat so that symlinks are not
+// followed. This avoids ELOOP when the tree contains circular symlinks.
+func lstatWalkErr(root string, fn func(path string, info os.FileInfo) error) error {
+	return lstatWalkDir(root, fn)
+}
+
+func lstatWalkDir(dir string, fn func(string, os.FileInfo) error) error {
+	info, err := os.Lstat(dir)
+	if err != nil {
+		return err
+	}
+	if err := fn(dir, info); err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return nil
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		child := filepath.Join(dir, e.Name())
+		ci, err := os.Lstat(child)
+		if err != nil {
+			return err
+		}
+		if ci.IsDir() {
+			if err := lstatWalkDir(child, fn); err != nil {
+				return err
+			}
+		} else {
+			if err := fn(child, ci); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
+// hasDebugfsUnsafeChars returns true if the path contains characters that
+// would break debugfs command parsing (newlines, null bytes, or unbalanced quotes).
+func hasDebugfsUnsafeChars(path string) bool {
+	return strings.ContainsAny(path, "\n\r\x00")
 }
 
 func sanitizeRef(ref string) string {

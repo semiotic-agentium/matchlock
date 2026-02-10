@@ -26,7 +26,7 @@ func (b *Builder) platformOptions() []remote.Option {
 
 // createExt4 creates an ext4 filesystem on macOS using e2fsprogs
 // Requires: brew install e2fsprogs && brew link e2fsprogs
-func (b *Builder) createExt4(sourceDir, destPath string) error {
+func (b *Builder) createExt4(sourceDir, destPath string, meta map[string]fileMeta) error {
 	// Check for mke2fs in PATH
 	mke2fsPath, err := exec.LookPath("mke2fs")
 	if err != nil {
@@ -38,13 +38,10 @@ func (b *Builder) createExt4(sourceDir, destPath string) error {
 		return fmt.Errorf("debugfs not found in PATH; install e2fsprogs: brew install e2fsprogs && brew link e2fsprogs")
 	}
 
-	// Calculate size
+	// Calculate size (use Lstat-based walk to avoid following symlinks)
 	var totalSize int64
-	filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
-		if err == nil {
-			totalSize += info.Size()
-		}
-		return nil
+	lstatWalk(sourceDir, func(path string, info os.FileInfo) {
+		totalSize += info.Size()
 	})
 
 	sizeMB := (totalSize / (1024 * 1024)) + 64
@@ -67,18 +64,17 @@ func (b *Builder) createExt4(sourceDir, destPath string) error {
 	// Build debugfs commands to copy all files
 	var debugfsCommands strings.Builder
 
-	err = filepath.Walk(sourceDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-
+	err = lstatWalkErr(sourceDir, func(path string, info os.FileInfo) error {
 		relPath, _ := filepath.Rel(sourceDir, path)
 		if relPath == "." {
 			return nil
 		}
 
-		// Normalize path for ext4 (use forward slashes, ensure leading /)
 		ext4Path := "/" + strings.ReplaceAll(relPath, "\\", "/")
+
+		if hasDebugfsUnsafeChars(ext4Path) {
+			return nil
+		}
 
 		if info.IsDir() {
 			debugfsCommands.WriteString(fmt.Sprintf("mkdir %s\n", ext4Path))
@@ -89,6 +85,20 @@ func (b *Builder) createExt4(sourceDir, destPath string) error {
 			if err == nil {
 				debugfsCommands.WriteString(fmt.Sprintf("symlink %s %s\n", ext4Path, target))
 			}
+		}
+
+		if fm, ok := meta[ext4Path]; ok {
+			debugfsCommands.WriteString(fmt.Sprintf("set_inode_field %s uid %d\n", ext4Path, fm.uid))
+			debugfsCommands.WriteString(fmt.Sprintf("set_inode_field %s gid %d\n", ext4Path, fm.gid))
+			var typeBits uint32
+			if info.IsDir() {
+				typeBits = 0o040000
+			} else if info.Mode()&os.ModeSymlink != 0 {
+				typeBits = 0o120000
+			} else {
+				typeBits = 0o100000
+			}
+			debugfsCommands.WriteString(fmt.Sprintf("set_inode_field %s mode 0%o\n", ext4Path, typeBits|uint32(fm.mode)))
 		}
 		return nil
 	})

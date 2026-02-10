@@ -35,3 +35,4 @@ RUN mkdir -p /home/agent/.claude /workspace \
 
 USER agent
 WORKDIR /home/agent/browser-use
+ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

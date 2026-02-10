@@ -4,9 +4,9 @@
       "allowedTools": [],
       "mcpContextUris": [],
       "mcpServers": {},
-      "enabledMcpjsonServers": [],
+      "enabledMcpjsonServers": ["browser"],
       "disabledMcpjsonServers": ["playwright"],
-      "hasTrustDialogAccepted": false
+      "hasTrustDialogAccepted": true
     }
   },
   "bypassPermissionsModeAccepted": true

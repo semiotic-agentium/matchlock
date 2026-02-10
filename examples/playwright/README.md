@@ -31,7 +31,7 @@ matchlock build -t browser-use:latest --build-cache-size 30000 examples/playwrig
 
 ## Run
 
-> **Important:** This image requires more resources than the defaults (1 CPU / 512MB). Use `--cpus 4 --memory 8192` (or higher) to avoid boot timeouts and OOM kills.
+> **Important:** This image requires more resources than the defaults (1 CPU / 512MB). Use `--cpus 2 --memory 4096` (or higher) to avoid boot timeouts and OOM kills.
 
 ### Interactive Mode
 
@@ -39,13 +39,12 @@ Drop into Claude Code with the Playwright MCP tools available:
 
 ```bash
 matchlock run --image browser-use:latest \
-  --cpus 4 --memory 8192 \
+  --cpus 2 --memory 4096 \
   --secret ANTHROPIC_API_KEY@api.anthropic.com \
   --allow-host api.anthropic.com \
   --allow-host "*.anthropic.com" \
   --allow-host "*" \
-  -it \
-  -- /usr/local/bin/entrypoint.sh
+  -it
 ```
 
 > **Note:** `--allow-host "*"` permits all outbound traffic so the browser can reach any website. Narrow this down to specific domains if you want tighter control.
@@ -58,13 +57,13 @@ Give Claude a task directly:
 
 ```bash
 matchlock run --image browser-use:latest \
-  --cpus 4 --memory 8192 \
+  --cpus 2 --memory 4096 \
   --secret ANTHROPIC_API_KEY@api.anthropic.com \
   --allow-host api.anthropic.com \
   --allow-host "*.anthropic.com" \
   --allow-host "*" \
   -it \
-  -- /usr/local/bin/entrypoint.sh "Go to news.ycombinator.com and tell me the top 5 stories"
+  -- "Go to news.ycombinator.com and tell me the top 5 stories"
 ```
 
 ### Restrict Network Access
@@ -73,14 +72,14 @@ If the browser only needs to reach specific sites:
 
 ```bash
 matchlock run --image browser-use:latest \
-  --cpus 4 --memory 8192 \
+  --cpus 2 --memory 4096 \
   --secret ANTHROPIC_API_KEY@api.anthropic.com \
   --allow-host api.anthropic.com \
   --allow-host "*.anthropic.com" \
   --allow-host "*.github.com" \
   --allow-host "github.com" \
   -it \
-  -- /usr/local/bin/entrypoint.sh "Go to github.com/jingkaihe/matchlock and summarise the README"
+  -- "Go to github.com/jingkaihe/matchlock and summarise the README"
 ```
 
 ## How It Works

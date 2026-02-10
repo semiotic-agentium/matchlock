@@ -30,17 +30,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Claude Code + Playwright MCP + Chromium in a single layer, then clean caches
+# Create non-root agent user
+RUN useradd -m -s /bin/bash agent
+
+# Install Claude Code + Playwright MCP + Chromium as agent user
+USER agent
+ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global
+ENV PATH="/home/agent/.npm-global/bin:$PATH"
 RUN npm install -g @anthropic-ai/claude-code \
     && npx @playwright/mcp@latest --help || true \
     && npx playwright install chromium \
     && npm cache clean --force \
-    && rm -rf /tmp/* /root/.npm
+    && rm -rf /tmp/* /home/agent/.npm
 
 # Pre-configure Playwright MCP server
-RUN mkdir -p /root/.claude /workspace
+USER root
+RUN mkdir -p /home/agent/.claude /workspace && chown -R agent:agent /home/agent/.claude /workspace
 COPY claude-settings.json /etc/matchlock-mcp.json
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+USER agent
 WORKDIR /workspace

@@ -7,6 +7,11 @@ grep -q localhost /etc/hosts 2>/dev/null || {
     echo '::1 localhost' >> /etc/hosts
 }
 
+# Drop to agent user if running as root
+if [ "$(id -u)" = "0" ]; then
+    exec su - agent -c "export PATH=\"/home/agent/.npm-global/bin:\$PATH\"; cd /workspace; $(printf '%q ' "$0" "$@")"
+fi
+
 CLAUDE_ARGS="--dangerously-skip-permissions --mcp-config /etc/matchlock-mcp.json"
 
 if [ $# -eq 0 ]; then

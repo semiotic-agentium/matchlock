@@ -11,7 +11,9 @@ Run Claude Code with full browser automation inside a matchlock sandbox. Claude 
 ## Build the Image
 
 ```bash
-matchlock build -t browser-use:latest examples/playwright
+# `--build-cache-size 30000` so that you can repeatly build reliably without running out of device space
+# Otherwise you can omit it, and later on introduce it as matchlock automatically grows the disk
+matchlock build -t browser-use:latest --build-cache-size 30000 examples/playwright
 ```
 
 ## Run

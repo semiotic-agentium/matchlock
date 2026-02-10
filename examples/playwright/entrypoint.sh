@@ -1,18 +1,18 @@
 #!/bin/bash
 set -e
 
-# Ensure localhost resolves (matchlock's init doesn't populate /etc/hosts)
-grep -q localhost /etc/hosts 2>/dev/null || {
-    echo '127.0.0.1 localhost' >> /etc/hosts
-    echo '::1 localhost' >> /etc/hosts
-}
-
-# Drop to agent user if running as root
-if [ "$(id -u)" = "0" ]; then
-    exec su - agent -c "export PATH=\"/home/agent/.npm-global/bin:\$PATH\"; cd /workspace; $(printf '%q ' "$0" "$@")"
+# Import matchlock MITM CA into Chromium's NSS database so Playwright trusts it
+MATCHLOCK_CA="/etc/ssl/certs/matchlock-ca.crt"
+if [ -f "$MATCHLOCK_CA" ]; then
+    NSSDB="$HOME/.pki/nssdb"
+    mkdir -p "$NSSDB"
+    if [ ! -f "$NSSDB/cert9.db" ]; then
+        certutil -d sql:"$NSSDB" -N --empty-password
+    fi
+    certutil -d sql:"$NSSDB" -A -t "C,," -n "matchlock-ca" -i "$MATCHLOCK_CA"
 fi
 
-CLAUDE_ARGS="--dangerously-skip-permissions --mcp-config /etc/matchlock-mcp.json"
+CLAUDE_ARGS="--dangerously-skip-permissions --mcp-config /home/agent/browser-use/.mcp.json"
 
 if [ $# -eq 0 ]; then
     exec claude $CLAUDE_ARGS

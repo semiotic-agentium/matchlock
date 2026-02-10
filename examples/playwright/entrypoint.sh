@@ -12,10 +12,11 @@ if [ -f "$MATCHLOCK_CA" ]; then
     certutil -d sql:"$NSSDB" -A -t "C,," -n "matchlock-ca" -i "$MATCHLOCK_CA"
 fi
 
-CLAUDE_ARGS="--dangerously-skip-permissions --mcp-config /home/agent/browser-use/.mcp.json --tools Read"
+kodelet mcp generate
 
 if [ $# -eq 0 ]; then
-    exec claude $CLAUDE_ARGS
+    export TERM=xterm-256color
+    exec toad acp 'kodelet acp'
 else
-    exec claude $CLAUDE_ARGS -p "$*"
+    exec kodelet run "$*"
 fi

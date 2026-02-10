@@ -13,25 +13,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && curl -fsSL https://deb.nodesource.com/setup_22.x | bash - \
     && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -m -s /bin/bash agent
+    && useradd -m -s /bin/bash agent \
+    && mkdir -p /home/agent/.kodelet /home/agent/.local/bin /workspace \
+    && chown -R agent:agent /home/agent /workspace
 
-# Install Claude Code + Playwright MCP as agent user
+# Install kodelet + toad + bootstrap as agent user
 USER agent
-ENV NPM_CONFIG_PREFIX=/home/agent/.npm-global
-ENV PATH="/home/agent/.npm-global/bin:$PATH"
-RUN npm install -g @anthropic-ai/claude-code \
-    && npm cache clean --force \
-    && rm -rf /tmp/*
+ENV PATH="/home/agent/.local/bin:$PATH"
+RUN curl -sSL https://raw.githubusercontent.com/jingkaihe/kodelet/main/install.sh | bash \
+    && curl -fsSL batrachian.ai/install | sh \
+    && kodelet setup
 
-# Config files + entrypoint
+# Config files + entrypoint (after install layers for better caching)
 USER root
-COPY claude-settings.json /home/agent/browser-use/.claude/settings.json
-COPY claude.json /home/agent/.claude.json
-COPY mcp-config.json /home/agent/browser-use/.mcp.json
-COPY entrypoint.sh /usr/local/bin/entrypoint.sh
-RUN mkdir -p /home/agent/.claude /workspace \
-    && chmod +x /usr/local/bin/entrypoint.sh \
-    && chown -R agent:agent /home/agent/.claude /home/agent/.claude.json /home/agent/browser-use /workspace
+COPY --chown=agent:agent kodelet-config.yaml /home/agent/browser-use/kodelet-config.yaml
+COPY --chmod=755 entrypoint.sh /usr/local/bin/entrypoint.sh
 
 USER agent
 WORKDIR /home/agent/browser-use

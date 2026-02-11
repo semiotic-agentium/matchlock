@@ -321,8 +321,8 @@ func TestExecCancelKillsProcess(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded, got: %v", err)
 	}
-	if elapsed > 10*time.Second {
-		t.Errorf("cancel took %v, expected < 10s", elapsed)
+	if elapsed > 5*time.Second {
+		t.Errorf("cancel took %v, expected < 5s", elapsed)
 	}
 }
 
@@ -343,8 +343,8 @@ func TestExecStreamCancelKillsProcess(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("expected DeadlineExceeded, got: %v", err)
 	}
-	if elapsed > 10*time.Second {
-		t.Errorf("cancel took %v, expected < 10s", elapsed)
+	if elapsed > 5*time.Second {
+		t.Errorf("cancel took %v, expected < 5s", elapsed)
 	}
 }
 
@@ -431,7 +431,7 @@ func TestExecManualCancelViaContext(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("expected context.Canceled, got: %v", err)
 	}
-	if elapsed > 10*time.Second {
-		t.Errorf("cancel took %v, expected < 10s", elapsed)
+	if elapsed > 5*time.Second {
+		t.Errorf("cancel took %v, expected < 5s", elapsed)
 	}
 }

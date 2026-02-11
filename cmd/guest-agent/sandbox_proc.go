@@ -278,11 +278,8 @@ func applySandboxSysProcAttr(cmd *exec.Cmd) {
 // kill (-pid) for cancellation. Must NOT be used with PTY exec because
 // pty.Start sets Setsid which conflicts with Setpgid.
 func applySandboxSysProcAttrBatch(cmd *exec.Cmd) {
-	cmd.SysProcAttr = &syscall.SysProcAttr{
-		Cloneflags: syscall.CLONE_NEWPID | syscall.CLONE_NEWNS,
-		Setpgid:    true,
-		Pdeathsig:  syscall.SIGKILL,
-	}
+	applySandboxSysProcAttr(cmd)
+	cmd.SysProcAttr.Setpgid = true
 }
 
 // wrapCommandForSandbox rewrites the exec.Cmd to use the re-exec launcher pattern.

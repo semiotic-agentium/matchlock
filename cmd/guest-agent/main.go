@@ -145,6 +145,40 @@ func serveExec() {
 	}
 }
 
+// monitorVsockCancel monitors the vsock fd for EOF (host closed the connection
+// due to cancellation) and gracefully terminates the child process using
+// process-group kill: SIGTERM → cancelGracePeriod → SIGKILL.
+//
+// Returns a channel that the caller MUST close after cmd.Wait() returns to
+// prevent signals being sent to a recycled PID.
+func monitorVsockCancel(fd int, cmd *exec.Cmd) chan struct{} {
+	waitDone := make(chan struct{})
+	go func() {
+		buf := make([]byte, 1)
+		syscall.Read(fd, buf)
+		select {
+		case <-waitDone:
+			return
+		default:
+		}
+		pid := cmd.Process.Pid
+		syscall.Kill(-pid, syscall.SIGTERM)
+		timer := time.AfterFunc(cancelGracePeriod, func() {
+			select {
+			case <-waitDone:
+				return
+			default:
+			}
+			syscall.Kill(-pid, syscall.SIGKILL)
+		})
+		go func() {
+			<-waitDone
+			timer.Stop()
+		}()
+	}()
+	return waitDone
+}
+
 func handleExec(fd int) {
 	// Read message header (type + length)
 	header := make([]byte, 5)
@@ -213,23 +247,10 @@ func handleExecBatch(fd int, data []byte) {
 		return
 	}
 
-	// Monitor the vsock connection: if the host closes it (cancellation),
-	// gracefully terminate the child process (SIGTERM → grace period → SIGKILL).
-	// Uses process group kill (-pid) to reach all processes in the group,
-	// including PID 1 in a child PID namespace where individual SIGTERM is ignored.
-	go func() {
-		buf := make([]byte, 1)
-		syscall.Read(fd, buf) // blocks until EOF or error
-		if cmd.Process != nil {
-			pid := cmd.Process.Pid
-			syscall.Kill(-pid, syscall.SIGTERM)
-			time.AfterFunc(cancelGracePeriod, func() {
-				syscall.Kill(-pid, syscall.SIGKILL)
-			})
-		}
-	}()
+	waitDone := monitorVsockCancel(fd, cmd)
 
 	err := cmd.Wait()
+	close(waitDone)
 
 	resp := &ExecResponse{
 		Stdout: stdout.Bytes(),
@@ -295,25 +316,7 @@ func handleExecStreamBatch(fd int, data []byte) {
 		return
 	}
 
-	// Monitor the vsock connection: if the host closes it (cancellation),
-	// gracefully terminate the child process (SIGTERM → grace period → SIGKILL).
-	// Uses process group kill (-pid) to reach all processes in the group,
-	// including PID 1 in a child PID namespace where individual SIGTERM is ignored.
-	connClosed := make(chan struct{})
-	go func() {
-		defer close(connClosed)
-		buf := make([]byte, 1)
-		// This fd is write-only from guest side during streaming, so Read
-		// will block until the host closes the connection.
-		syscall.Read(fd, buf)
-		if cmd.Process != nil {
-			pid := cmd.Process.Pid
-			syscall.Kill(-pid, syscall.SIGTERM)
-			time.AfterFunc(cancelGracePeriod, func() {
-				syscall.Kill(-pid, syscall.SIGKILL)
-			})
-		}
-	}()
+	waitDone := monitorVsockCancel(fd, cmd)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
@@ -348,6 +351,7 @@ func handleExecStreamBatch(fd int, data []byte) {
 
 	wg.Wait()
 	cmdErr := cmd.Wait()
+	close(waitDone)
 
 	resp := &ExecResponse{}
 	if cmdErr != nil {

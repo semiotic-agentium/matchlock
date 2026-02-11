@@ -391,15 +391,10 @@ func (m *LinuxMachine) execVsock(ctx context.Context, command string, opts *api.
 
 	// Watch for context cancellation and close the connection to unblock reads.
 	// Closing the connection causes the guest agent to see EOF and kill the child.
-	done := make(chan struct{})
-	defer close(done)
-	go func() {
-		select {
-		case <-ctx.Done():
-			conn.Close()
-		case <-done:
-		}
-	}()
+	stop := context.AfterFunc(ctx, func() {
+		conn.Close()
+	})
+	defer stop()
 
 	req := vsock.ExecRequest{
 		Command: command,

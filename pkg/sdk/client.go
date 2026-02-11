@@ -143,10 +143,8 @@ func (c *Client) Close(timeout time.Duration) error {
 	go func() { done <- c.cmd.Wait() }()
 
 	if timeout == 0 {
-		// Fire-and-forget: send close, close stdin, kill immediately.
-		go func() {
-			c.sendRequest("close", params)
-		}()
+		// Kill immediately — no point sending a close RPC since we're
+		// about to kill the process anyway.
 		c.stdin.Close()
 		c.cmd.Process.Kill()
 		<-done

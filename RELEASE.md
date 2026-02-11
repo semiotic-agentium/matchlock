@@ -4,6 +4,7 @@
 
 * Added end-to-end context cancellation support across the entire matchlock stack.
 * Add init=/init kernel arg for Linux backend and prevent /sbin/init overwrites for systemd compatibility
+* Added examples of launching docker container inside the sandbox
 
 ## 0.1.11
 

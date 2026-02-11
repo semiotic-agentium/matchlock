@@ -178,7 +178,6 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 		{initTmp.Name(), "/init"},
 		// NOTE: We intentionally do NOT overwrite /sbin/init or /usr/sbin/init.
 		// Images with ENTRYPOINT ["/sbin/init"] (e.g. systemd) would re-execute
-		// the matchlock init script, launching a duplicate guest-agent.
 		// The kernel cmdline uses init=/init to boot our script directly.
 	}
 

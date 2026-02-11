@@ -2,7 +2,8 @@
 
 ## Unreleased
 
-Added end-to-end context cancellation support across the entire matchlock stack.
+* Added end-to-end context cancellation support across the entire matchlock stack.
+* Add init=/init kernel arg for Linux backend and prevent /sbin/init overwrites for systemd compatibility
 
 ## 0.1.11
 

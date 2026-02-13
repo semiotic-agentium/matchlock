@@ -22,6 +22,41 @@ The record includes:
 - known resource identifiers/paths (rootfs, subnet allocation, TAP table names)
 - per-step cleanup status for close/reconcile operations
 
+## Metadata storage backend
+
+Lifecycle phase/audit data is still stored per-VM in `lifecycle.json`.
+
+VM runtime metadata and subnet allocation metadata are now stored in SQLite:
+
+- `~/.matchlock/state.db`
+- tables: `vms`, `subnet_allocations`, `schema_migrations`
+
+Image metadata is stored in a separate SQLite DB:
+
+- `~/.cache/matchlock/images/metadata.db`
+- tables: `images`, `schema_migrations`
+- `images.scope` distinguishes `local` vs `registry` metadata
+
+Large artifacts remain filesystem-based:
+
+- VM directories, logs, sockets, and per-VM rootfs copies
+- image rootfs files under image cache directories
+
+## Schema migrations
+
+Both DBs use automatic startup migrations with:
+
+- `journal_mode=WAL`
+- `foreign_keys=ON`
+- `busy_timeout`
+
+Migration behavior:
+
+- applied versions are tracked in `schema_migrations`
+- each migration runs in a transaction
+- before pending migrations, Matchlock creates a pre-migration backup
+- if migration fails, Matchlock restores from that backup
+
 ## Phases
 
 Phases are validated through an allowed-transition state machine.
@@ -56,7 +91,7 @@ The lifecycle record tracks resources needed for deterministic cleanup:
 
 - VM state directory: `~/.matchlock/vms/<vm-id>/`
 - per-VM rootfs copy: `rootfs.ext4` under VM state dir
-- subnet allocation file: `~/.matchlock/subnets/<vm-id>.json`
+- subnet allocation row in `~/.matchlock/state.db` (`subnet_allocations` table)
 - Linux-only network artifacts:
   - TAP interface (`fc-<suffix>`)
   - nftables tables (`matchlock_<tap>`, `matchlock_nat_<tap>`)
@@ -88,7 +123,7 @@ matchlock gc --force-running
 
 `gc` reconciles:
 
-- subnet allocation file
+- subnet allocation row
 - rootfs copy
 - Linux: TAP + nftables artifacts
 
@@ -106,12 +141,13 @@ This prevents losing VM metadata while leaking host resources.
 
 ## Subnet allocator safety
 
-Subnet allocation now uses a cross-process file lock:
+Subnet allocation is now DB-backed with:
 
-- lock file: `~/.matchlock/subnets/.lock`
-- only `*.json` allocation files are considered
+- unique subnet octet constraint at the DB level
+- atomic writes via SQLite transactions
+- WAL mode for robust cross-process concurrency
 
-This avoids allocation races when multiple Matchlock processes run in parallel.
+This replaces the previous lock-file + JSON-scan allocator model.
 
 ## Platform notes
 
@@ -125,9 +161,14 @@ This avoids allocation races when multiple Matchlock processes run in parallel.
    - `matchlock list`
 2. Inspect lifecycle record:
    - `cat ~/.matchlock/vms/<vm-id>/lifecycle.json`
-3. Reconcile leaked resources:
+3. (Optional) Inspect VM/subnet DB metadata:
+   - `sqlite3 ~/.matchlock/state.db 'select id,status,pid from vms;'`
+   - `sqlite3 ~/.matchlock/state.db 'select vm_id,octet,subnet from subnet_allocations;'`
+4. (Optional) Inspect image metadata:
+   - `sqlite3 ~/.cache/matchlock/images/metadata.db 'select scope,tag,digest,size from images;'`
+5. Reconcile leaked resources:
    - `matchlock gc <vm-id>`
-4. Remove stopped VM metadata after successful reconcile:
+6. Remove stopped VM metadata after successful reconcile:
    - `matchlock rm <vm-id>`
 
 If `gc` still fails, check the failed cleanup steps in `lifecycle.json` and fix

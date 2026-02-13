@@ -8,11 +8,13 @@ import (
 	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -42,7 +44,7 @@ func (b *LinuxBackend) Name() string {
 }
 
 func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Machine, error) {
-	tapName := fmt.Sprintf("fc-%s", config.ID[:8])
+	tapName := tapNameForVMID(config.ID)
 	tapFD, err := CreateTAP(tapName)
 	if err != nil {
 		return nil, errx.Wrap(ErrTAPCreate, err)
@@ -79,6 +81,19 @@ func (b *LinuxBackend) Create(ctx context.Context, config *vm.VMConfig) (vm.Mach
 	}
 
 	return m, nil
+}
+
+func tapNameForVMID(vmID string) string {
+	suffix := strings.TrimPrefix(vmID, "vm-")
+	if len(suffix) >= 8 {
+		suffix = suffix[:8]
+	} else {
+		h := fnv.New32a()
+		_, _ = h.Write([]byte(vmID))
+		hash := fmt.Sprintf("%08x", h.Sum32())
+		suffix = (suffix + hash)[:8]
+	}
+	return "fc-" + suffix
 }
 
 type LinuxMachine struct {

@@ -53,6 +53,8 @@ var (
 	ErrInvalidSecret  = errors.New("invalid secret")
 	ErrCreateSandbox  = errors.New("creating sandbox")
 	ErrStartSandbox   = errors.New("starting sandbox")
+	ErrCloseSandbox   = errors.New("closing sandbox")
+	ErrRemoveSandbox  = errors.New("removing sandbox")
 	ErrExecCommand    = errors.New("executing command")
 )
 

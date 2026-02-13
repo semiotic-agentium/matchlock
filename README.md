@@ -175,7 +175,8 @@ graph LR
 
 ## Docs
 
-See [AGENTS.md](AGENTS.md) for the full developer reference.
+- [Lifecycle and Cleanup Runbook](docs/lifecycle.md)
+- [Developer Reference](AGENTS.md)
 
 ## License
 

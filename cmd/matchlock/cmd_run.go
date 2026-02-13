@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -257,7 +258,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 	}
 
 	if err := sb.Start(ctx); err != nil {
-		sb.Close(ctx)
+		closeErr := sb.Close(ctx)
+		if closeErr != nil {
+			return errors.Join(errx.Wrap(ErrStartSandbox, err), errx.Wrap(ErrCloseSandbox, closeErr))
+		}
 		return errx.Wrap(ErrStartSandbox, err)
 	}
 
@@ -280,15 +284,36 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return context.WithTimeout(context.Background(), gracefulShutdown)
 	}
 
+	cleanupSandbox := func(remove bool) error {
+		c, cancel := closeCtx()
+		defer cancel()
+
+		var errs []error
+		if err := sb.Close(c); err != nil {
+			errs = append(errs, errx.Wrap(ErrCloseSandbox, err))
+		}
+		if remove {
+			if err := stateMgr.Remove(sb.ID()); err != nil {
+				errs = append(errs, errx.Wrap(ErrRemoveSandbox, err))
+			}
+		}
+		if len(errs) > 0 {
+			return errors.Join(errs...)
+		}
+		return nil
+	}
+
 	if interactiveMode {
 		exitCode := runInteractive(ctx, sb, command, workdir)
 		if rm {
-			c, cancel := closeCtx()
-			sb.Close(c)
-			cancel()
-			stateMgr.Remove(sb.ID())
+			if err := cleanupSandbox(true); err != nil {
+				return err
+			}
+			return commandExit(exitCode)
 		}
-		os.Exit(exitCode)
+		// Keep sandbox alive for follow-up `matchlock exec` sessions.
+		<-ctx.Done()
+		return cleanupSandbox(false)
 	}
 
 	if command != "" {
@@ -305,29 +330,25 @@ func runRun(cmd *cobra.Command, args []string) error {
 		result, err := sb.Exec(ctx, command, opts)
 		if err != nil {
 			if rm {
-				c, cancel := closeCtx()
-				sb.Close(c)
-				cancel()
-				stateMgr.Remove(sb.ID())
+				if cleanupErr := cleanupSandbox(true); cleanupErr != nil {
+					return errors.Join(errx.Wrap(ErrExecCommand, err), cleanupErr)
+				}
 			}
 			return errx.Wrap(ErrExecCommand, err)
 		}
 
 		if rm {
-			c, cancel := closeCtx()
-			sb.Close(c)
-			cancel()
-			stateMgr.Remove(sb.ID())
-			os.Exit(result.ExitCode)
+			if err := cleanupSandbox(true); err != nil {
+				return err
+			}
+			return commandExit(result.ExitCode)
 		}
 	}
 
 	if !rm {
 		// Block until signal — keeps the sandbox alive for `matchlock exec`
 		<-ctx.Done()
-		c, cancel := closeCtx()
-		sb.Close(c)
-		cancel()
+		return cleanupSandbox(false)
 	}
 
 	return nil

@@ -2,10 +2,12 @@ package state
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 )
@@ -30,6 +32,10 @@ type SubnetInfo struct {
 func NewSubnetAllocator() *SubnetAllocator {
 	home, _ := os.UserHomeDir()
 	baseDir := filepath.Join(home, ".matchlock", "subnets")
+	return NewSubnetAllocatorWithDir(baseDir)
+}
+
+func NewSubnetAllocatorWithDir(baseDir string) *SubnetAllocator {
 	os.MkdirAll(baseDir, 0755)
 
 	return &SubnetAllocator{
@@ -44,11 +50,15 @@ func (a *SubnetAllocator) Allocate(vmID string) (*SubnetInfo, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Find an available octet
-	used := make(map[int]bool)
-	entries, _ := os.ReadDir(a.baseDir)
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	var allocated *SubnetInfo
+	if err := a.withFileLock(func() error {
+		// Find an available octet
+		used := make(map[int]bool)
+		entries, _ := os.ReadDir(a.baseDir)
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+				continue
+			}
 			data, err := os.ReadFile(filepath.Join(a.baseDir, entry.Name()))
 			if err != nil {
 				continue
@@ -58,36 +68,39 @@ func (a *SubnetAllocator) Allocate(vmID string) (*SubnetInfo, error) {
 				used[info.Octet] = true
 			}
 		}
-	}
 
-	// Find first available octet
-	var octet int
-	for o := a.minOctet; o <= a.maxOctet; o++ {
-		if !used[o] {
-			octet = o
-			break
+		// Find first available octet
+		var octet int
+		for o := a.minOctet; o <= a.maxOctet; o++ {
+			if !used[o] {
+				octet = o
+				break
+			}
 		}
-	}
 
-	if octet == 0 {
-		return nil, errx.With(ErrNoAvailableSubnets, " (all %d-%d in use)", a.minOctet, a.maxOctet)
-	}
+		if octet == 0 {
+			return errx.With(ErrNoAvailableSubnets, " (all %d-%d in use)", a.minOctet, a.maxOctet)
+		}
 
-	info := &SubnetInfo{
-		Octet:     octet,
-		GatewayIP: fmt.Sprintf("192.168.%d.1", octet),
-		GuestIP:   fmt.Sprintf("192.168.%d.2", octet),
-		Subnet:    fmt.Sprintf("192.168.%d.0/24", octet),
-		VMID:      vmID,
-	}
+		info := &SubnetInfo{
+			Octet:     octet,
+			GatewayIP: fmt.Sprintf("192.168.%d.1", octet),
+			GuestIP:   fmt.Sprintf("192.168.%d.2", octet),
+			Subnet:    fmt.Sprintf("192.168.%d.0/24", octet),
+			VMID:      vmID,
+		}
 
-	// Save allocation
-	data, _ := json.Marshal(info)
-	if err := os.WriteFile(filepath.Join(a.baseDir, vmID+".json"), data, 0644); err != nil {
-		return nil, errx.Wrap(ErrSaveSubnetAllocation, err)
+		// Save allocation
+		data, _ := json.Marshal(info)
+		if err := os.WriteFile(filepath.Join(a.baseDir, vmID+".json"), data, 0644); err != nil {
+			return errx.Wrap(ErrSaveSubnetAllocation, err)
+		}
+		allocated = info
+		return nil
+	}); err != nil {
+		return nil, err
 	}
-
-	return info, nil
+	return allocated, nil
 }
 
 // Release frees a subnet allocation
@@ -95,16 +108,18 @@ func (a *SubnetAllocator) Release(vmID string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	path := filepath.Join(a.baseDir, vmID+".json")
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-		return err
-	}
-	return nil
+	return a.withFileLock(func() error {
+		path := filepath.Join(a.baseDir, vmID+".json")
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	})
 }
 
 // Get retrieves subnet info for a VM
 func (a *SubnetAllocator) Get(vmID string) (*SubnetInfo, error) {
-	path := filepath.Join(a.baseDir, vmID+".json")
+	path := a.AllocationPath(vmID)
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -122,26 +137,53 @@ func (a *SubnetAllocator) Cleanup(mgr *Manager) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	entries, err := os.ReadDir(a.baseDir)
+	return a.withFileLock(func() error {
+		entries, err := os.ReadDir(a.baseDir)
+		if err != nil {
+			return err
+		}
+
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+				continue
+			}
+
+			vmID := entry.Name()[:len(entry.Name())-5]
+
+			// Check if VM still exists
+			if _, err := mgr.Get(vmID); err != nil {
+				os.Remove(filepath.Join(a.baseDir, entry.Name()))
+			}
+		}
+
+		return nil
+	})
+}
+
+func (a *SubnetAllocator) withFileLock(fn func() error) error {
+	lockPath := filepath.Join(a.baseDir, ".lock")
+	lockFile, err := os.OpenFile(lockPath, os.O_CREATE|os.O_RDWR, 0600)
 	if err != nil {
-		return err
+		return errx.Wrap(ErrSubnetLockOpen, err)
+	}
+	defer lockFile.Close()
+
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		return errx.Wrap(ErrSubnetLockAcquire, err)
 	}
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
+	fnErr := fn()
+	unlockErr := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN)
+	if unlockErr != nil {
+		unlockWrapped := errx.Wrap(ErrSubnetLockRelease, unlockErr)
+		if fnErr != nil {
+			return errors.Join(fnErr, unlockWrapped)
 		}
-
-		vmID := entry.Name()
-		if len(vmID) > 5 && vmID[len(vmID)-5:] == ".json" {
-			vmID = vmID[:len(vmID)-5]
-		}
-
-		// Check if VM still exists
-		if _, err := mgr.Get(vmID); err != nil {
-			os.Remove(filepath.Join(a.baseDir, entry.Name()))
-		}
+		return unlockWrapped
 	}
+	return fnErr
+}
 
-	return nil
+func (a *SubnetAllocator) AllocationPath(vmID string) string {
+	return filepath.Join(a.baseDir, vmID+".json")
 }

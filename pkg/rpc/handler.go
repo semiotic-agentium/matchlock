@@ -568,7 +568,17 @@ func (h *Handler) handleClose(ctx context.Context, req *Request) *Response {
 	h.vmMu.Unlock()
 
 	if vm != nil {
-		vm.Close(ctx)
+		if err := vm.Close(ctx); err != nil {
+			code := ErrCodeVMFailed
+			if ctx.Err() != nil {
+				code = ErrCodeCancelled
+			}
+			return &Response{
+				JSONRPC: "2.0",
+				Error:   &Error{Code: code, Message: err.Error()},
+				ID:      req.ID,
+			}
+		}
 	}
 
 	return &Response{

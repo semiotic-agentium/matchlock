@@ -125,8 +125,8 @@ func (c *Client) VMID() string {
 // Call Remove after Close to delete the state entirely.
 //
 // timeout controls how long to wait for the process to exit after sending the
-// close request. A zero value kills the process immediately. When a non-zero
-// timeout expires, the process is forcefully killed.
+// close request. A zero value uses a short grace period and then force-kills
+// if needed. When a non-zero timeout expires, the process is forcefully killed.
 func (c *Client) Close(timeout time.Duration) error {
 	c.mu.Lock()
 	if c.closed {
@@ -136,25 +136,21 @@ func (c *Client) Close(timeout time.Duration) error {
 	c.closed = true
 	c.mu.Unlock()
 
+	effectiveTimeout := timeout
+	if effectiveTimeout <= 0 {
+		effectiveTimeout = 2 * time.Second
+	}
+
 	params := map[string]interface{}{
-		"timeout_seconds": timeout.Seconds(),
+		"timeout_seconds": effectiveTimeout.Seconds(),
 	}
 
 	done := make(chan error, 1)
 	go func() { done <- c.cmd.Wait() }()
 
-	if timeout == 0 {
-		// Close is required for explicit tidying up (e.g. tap device on Linux)
-		c.sendRequest("close", params)
-		c.stdin.Close()
-		c.cmd.Process.Kill()
-		<-done
-		return nil
-	}
-
 	// Send close RPC with a bounded context so it doesn't block forever
 	// (e.g. if the handler is draining in-flight cancelled requests).
-	closeCtx, closeCancel := context.WithTimeout(context.Background(), timeout+5*time.Second)
+	closeCtx, closeCancel := context.WithTimeout(context.Background(), effectiveTimeout+5*time.Second)
 	c.sendRequestCtx(closeCtx, "close", params, nil)
 	closeCancel()
 	c.stdin.Close()
@@ -162,10 +158,10 @@ func (c *Client) Close(timeout time.Duration) error {
 	select {
 	case err := <-done:
 		return err
-	case <-time.After(timeout):
+	case <-time.After(effectiveTimeout):
 		c.cmd.Process.Kill()
 		<-done
-		return errx.With(ErrCloseTimeout, " after %s", timeout)
+		return errx.With(ErrCloseTimeout, " after %s", effectiveTimeout)
 	}
 }
 

@@ -3,7 +3,6 @@ package image
 import (
 	"archive/tar"
 	"context"
-	"encoding/json"
 
 	"io"
 	"os"
@@ -57,6 +56,9 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 		if result, err := b.store.Get(imageRef); err == nil {
 			return result, nil
 		}
+		if result, err := GetRegistryCache(imageRef, b.cacheDir); err == nil {
+			return result, nil
+		}
 	}
 
 	ref, err := name.ParseReference(imageRef)
@@ -65,29 +67,6 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 	}
 
 	cacheDir := filepath.Join(b.cacheDir, sanitizeRef(imageRef))
-	if !b.forcePull {
-		if entries, err := os.ReadDir(cacheDir); err == nil {
-			for _, e := range entries {
-				if filepath.Ext(e.Name()) == ".ext4" {
-					rootfsPath := filepath.Join(cacheDir, e.Name())
-					fi, _ := os.Stat(rootfsPath)
-					result := &BuildResult{
-						RootfsPath: rootfsPath,
-						Digest:     strings.TrimSuffix(e.Name(), ".ext4"),
-						Size:       fi.Size(),
-						Cached:     true,
-					}
-					if metaBytes, err := os.ReadFile(filepath.Join(cacheDir, "metadata.json")); err == nil {
-						var meta ImageMeta
-						if json.Unmarshal(metaBytes, &meta) == nil {
-							result.OCI = meta.OCI
-						}
-					}
-					return result, nil
-				}
-			}
-		}
-	}
 
 	remoteOpts := []remote.Option{
 		remote.WithAuthFromKeychain(authn.DefaultKeychain),
@@ -113,6 +92,14 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 
 	if fi, err := os.Stat(rootfsPath); err == nil && fi.Size() > 0 {
 		ociConfig := extractOCIConfig(img)
+		_ = SaveRegistryCache(imageRef, b.cacheDir, rootfsPath, ImageMeta{
+			Tag:       imageRef,
+			Digest:    digest.String(),
+			Size:      fi.Size(),
+			CreatedAt: time.Now().UTC(),
+			Source:    "registry",
+			OCI:       ociConfig,
+		})
 		return &BuildResult{
 			RootfsPath: rootfsPath,
 			Digest:     digest.String(),
@@ -146,12 +133,12 @@ func (b *Builder) Build(ctx context.Context, imageRef string) (*BuildResult, err
 		Tag:       imageRef,
 		Digest:    digest.String(),
 		Size:      fi.Size(),
-		CreatedAt: time.Now(),
+		CreatedAt: time.Now().UTC(),
 		Source:    "registry",
 		OCI:       ociConfig,
 	}
-	if metaBytes, err := json.MarshalIndent(imageMeta, "", "  "); err == nil {
-		os.WriteFile(filepath.Join(cacheDir, "metadata.json"), metaBytes, 0644)
+	if err := SaveRegistryCache(imageRef, b.cacheDir, rootfsPath, imageMeta); err != nil {
+		return nil, errx.Wrap(ErrMetadata, err)
 	}
 
 	return &BuildResult{

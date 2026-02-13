@@ -1,13 +1,15 @@
 package state
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"syscall"
 	"time"
+
+	"github.com/jingkaihe/matchlock/internal/errx"
 )
 
 type VMState struct {
@@ -21,122 +23,181 @@ type VMState struct {
 
 type Manager struct {
 	baseDir string
+	db      *sql.DB
+	initErr error
 }
 
 func NewManager() *Manager {
 	home, _ := os.UserHomeDir()
 	baseDir := filepath.Join(home, ".matchlock", "vms")
-	os.MkdirAll(baseDir, 0755)
-	return &Manager{baseDir: baseDir}
+	return NewManagerWithDir(baseDir)
 }
 
 func NewManagerWithDir(baseDir string) *Manager {
-	os.MkdirAll(baseDir, 0755)
-	return &Manager{baseDir: baseDir}
+	_ = os.MkdirAll(baseDir, 0755)
+
+	db, err := openStateDB(baseDir)
+	return &Manager{
+		baseDir: baseDir,
+		db:      db,
+		initErr: err,
+	}
+}
+
+func (m *Manager) ready() error {
+	if m.initErr != nil {
+		return errx.Wrap(ErrStateDBInit, m.initErr)
+	}
+	if m.db == nil {
+		return ErrStateDBInit
+	}
+	return nil
 }
 
 func (m *Manager) Register(id string, config interface{}) error {
-	dir := filepath.Join(m.baseDir, id)
-	if err := os.MkdirAll(dir, 0700); err != nil {
+	if err := m.ready(); err != nil {
 		return err
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "pid"), []byte(strconv.Itoa(os.Getpid())), 0600); err != nil {
-		return err
+	dir := filepath.Join(m.baseDir, id)
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		return errx.Wrap(ErrRegisterVM, err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "logs"), 0700); err != nil {
+		return errx.Wrap(ErrRegisterVM, err)
 	}
 
 	configJSON, err := json.Marshal(config)
 	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(filepath.Join(dir, "config.json"), configJSON, 0600); err != nil {
-		return err
+		return errx.Wrap(ErrRegisterVM, err)
 	}
 
-	if err := os.WriteFile(filepath.Join(dir, "status"), []byte("running"), 0600); err != nil {
-		return err
+	var cfg struct {
+		Image string `json:"image"`
 	}
+	_ = json.Unmarshal(configJSON, &cfg)
 
-	if err := os.WriteFile(filepath.Join(dir, "created_at"), []byte(time.Now().Format(time.RFC3339)), 0600); err != nil {
-		return err
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = m.db.Exec(
+		`INSERT INTO vms (id, pid, status, image, config_json, created_at, updated_at)
+		 VALUES (?, ?, ?, ?, ?, ?, ?)
+		 ON CONFLICT(id) DO UPDATE SET
+		   pid = excluded.pid,
+		   status = excluded.status,
+		   image = excluded.image,
+		   config_json = excluded.config_json,
+		   updated_at = excluded.updated_at`,
+		id,
+		os.Getpid(),
+		"running",
+		cfg.Image,
+		configJSON,
+		now,
+		now,
+	)
+	if err != nil {
+		_ = os.RemoveAll(dir)
+		return errx.Wrap(ErrRegisterVM, err)
 	}
-
-	logsDir := filepath.Join(dir, "logs")
-	os.MkdirAll(logsDir, 0700)
-
 	return nil
 }
 
 func (m *Manager) Unregister(id string) error {
-	dir := filepath.Join(m.baseDir, id)
-	os.WriteFile(filepath.Join(dir, "status"), []byte("stopped"), 0644)
-	os.Remove(filepath.Join(dir, "pid"))
+	if err := m.ready(); err != nil {
+		return err
+	}
+
+	res, err := m.db.Exec(`UPDATE vms SET status = ?, pid = 0, updated_at = ? WHERE id = ?`, "stopped", time.Now().UTC().Format(time.RFC3339Nano), id)
+	if err != nil {
+		return errx.Wrap(ErrUnregisterVM, err)
+	}
+	rows, err := res.RowsAffected()
+	if err == nil && rows == 0 {
+		return fmt.Errorf("VM %s not found", id)
+	}
 	return nil
 }
 
 func (m *Manager) List() ([]VMState, error) {
-	entries, err := os.ReadDir(m.baseDir)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return nil, nil
-		}
+	if err := m.ready(); err != nil {
 		return nil, err
 	}
 
-	var states []VMState
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
+	rows, err := m.db.Query(`SELECT id, pid, status, image, config_json, created_at FROM vms ORDER BY created_at DESC`)
+	if err != nil {
+		return nil, errx.Wrap(ErrListVMs, err)
+	}
+	defer rows.Close()
 
-		state, err := m.Get(entry.Name())
+	var states []VMState
+	for rows.Next() {
+		state, err := scanVMStateRow(rows)
 		if err != nil {
-			continue
+			return nil, errx.Wrap(ErrListVMs, err)
 		}
 
 		if state.Status == "running" && !m.isProcessRunning(state.PID) {
 			state.Status = "crashed"
-			os.WriteFile(filepath.Join(m.baseDir, state.ID, "status"), []byte("crashed"), 0644)
+			if _, err := m.db.Exec(`UPDATE vms SET status = ?, updated_at = ? WHERE id = ?`, "crashed", time.Now().UTC().Format(time.RFC3339Nano), state.ID); err != nil {
+				return nil, errx.Wrap(ErrListVMs, err)
+			}
 		}
-
 		states = append(states, state)
 	}
-
+	if err := rows.Err(); err != nil {
+		return nil, errx.Wrap(ErrListVMs, err)
+	}
 	return states, nil
 }
 
 func (m *Manager) Get(id string) (VMState, error) {
-	dir := filepath.Join(m.baseDir, id)
-
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		return VMState{}, fmt.Errorf("VM %s not found", id)
+	if err := m.ready(); err != nil {
+		return VMState{}, err
 	}
 
-	var state VMState
-	state.ID = id
-
-	if pidBytes, err := os.ReadFile(filepath.Join(dir, "pid")); err == nil {
-		state.PID, _ = strconv.Atoi(string(pidBytes))
-	}
-
-	if statusBytes, err := os.ReadFile(filepath.Join(dir, "status")); err == nil {
-		state.Status = string(statusBytes)
-	}
-
-	if configBytes, err := os.ReadFile(filepath.Join(dir, "config.json")); err == nil {
-		state.Config = configBytes
-
-		var cfg struct {
-			Image string `json:"image"`
+	row := m.db.QueryRow(`SELECT id, pid, status, image, config_json, created_at FROM vms WHERE id = ?`, id)
+	state, err := scanVMStateRow(row)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return VMState{}, fmt.Errorf("VM %s not found", id)
 		}
-		json.Unmarshal(configBytes, &cfg)
-		state.Image = cfg.Image
+		return VMState{}, errx.Wrap(ErrGetVM, err)
 	}
+	return state, nil
+}
 
-	if createdBytes, err := os.ReadFile(filepath.Join(dir, "created_at")); err == nil {
-		state.CreatedAt, _ = time.Parse(time.RFC3339, string(createdBytes))
+type rowScanner interface {
+	Scan(dest ...interface{}) error
+}
+
+func scanVMStateRow(scanner rowScanner) (VMState, error) {
+	var state VMState
+	var createdAtText string
+	var configBytes []byte
+	if err := scanner.Scan(&state.ID, &state.PID, &state.Status, &state.Image, &configBytes, &createdAtText); err != nil {
+		return VMState{}, err
 	}
-
+	if len(configBytes) > 0 {
+		state.Config = configBytes
+		if state.Image == "" {
+			var cfg struct {
+				Image string `json:"image"`
+			}
+			if err := json.Unmarshal(configBytes, &cfg); err == nil {
+				state.Image = cfg.Image
+			}
+		}
+	}
+	if createdAtText != "" {
+		createdAt, err := time.Parse(time.RFC3339Nano, createdAtText)
+		if err != nil {
+			createdAt, err = time.Parse(time.RFC3339, createdAtText)
+			if err != nil {
+				return VMState{}, err
+			}
+		}
+		state.CreatedAt = createdAt
+	}
 	return state, nil
 }
 
@@ -145,16 +206,14 @@ func (m *Manager) Kill(id string) error {
 	if err != nil {
 		return err
 	}
-
 	if state.PID == 0 {
 		return fmt.Errorf("VM %s is not running", id)
 	}
 
 	process, err := os.FindProcess(state.PID)
 	if err != nil {
-		return err
+		return errx.Wrap(ErrKillVM, err)
 	}
-
 	return process.Signal(syscall.SIGTERM)
 }
 
@@ -167,12 +226,32 @@ func (m *Manager) Remove(id string) error {
 		if m.isProcessRunning(state.PID) {
 			return fmt.Errorf("cannot remove running VM %s, kill it first", id)
 		}
-		os.WriteFile(filepath.Join(m.baseDir, id, "status"), []byte("crashed"), 0644)
+		_, _ = m.db.Exec(`UPDATE vms SET status = ?, updated_at = ? WHERE id = ?`, "crashed", time.Now().UTC().Format(time.RFC3339Nano), id)
 	}
 
-	NewSubnetAllocator().Release(id)
+	subnetAlloc := NewSubnetAllocatorWithDir(filepath.Join(filepath.Dir(m.baseDir), "subnets"))
+	_ = subnetAlloc.Release(id)
 
-	return os.RemoveAll(filepath.Join(m.baseDir, id))
+	tx, err := m.db.Begin()
+	if err != nil {
+		return errx.Wrap(ErrRemoveVM, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM subnet_allocations WHERE vm_id = ?`, id); err != nil {
+		_ = tx.Rollback()
+		return errx.Wrap(ErrRemoveVM, err)
+	}
+	if _, err := tx.Exec(`DELETE FROM vms WHERE id = ?`, id); err != nil {
+		_ = tx.Rollback()
+		return errx.Wrap(ErrRemoveVM, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return errx.Wrap(ErrRemoveVM, err)
+	}
+
+	if err := os.RemoveAll(filepath.Join(m.baseDir, id)); err != nil {
+		return errx.Wrap(ErrRemoveVM, err)
+	}
+	return nil
 }
 
 func (m *Manager) Prune() ([]string, error) {
@@ -190,8 +269,8 @@ func (m *Manager) Prune() ([]string, error) {
 		}
 	}
 
-	NewSubnetAllocator().Cleanup(m)
-
+	subnetAlloc := NewSubnetAllocatorWithDir(filepath.Join(filepath.Dir(m.baseDir), "subnets"))
+	_ = subnetAlloc.Cleanup(m)
 	return pruned, nil
 }
 
@@ -203,8 +282,7 @@ func (m *Manager) isProcessRunning(pid int) bool {
 	if err != nil {
 		return false
 	}
-	err = process.Signal(syscall.Signal(0))
-	return err == nil
+	return process.Signal(syscall.Signal(0)) == nil
 }
 
 func (m *Manager) LogPath(id string) string {
@@ -221,4 +299,8 @@ func (m *Manager) ExecSocketPath(id string) string {
 
 func (m *Manager) Dir(id string) string {
 	return filepath.Join(m.baseDir, id)
+}
+
+func (m *Manager) DBPath() string {
+	return stateDBPath(m.baseDir)
 }

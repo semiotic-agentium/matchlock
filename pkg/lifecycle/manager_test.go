@@ -46,10 +46,19 @@ func TestVMManagerRemove_ReconcileFailureKeepsState(t *testing.T) {
 	vmID := "vm-stopped2"
 	require.NoError(t, stateMgr.Register(vmID, map[string]string{"image": "alpine:latest"}))
 	require.NoError(t, stateMgr.Unregister(vmID))
-	require.NoError(t, os.Chmod(subnetDir, 0500))
-	t.Cleanup(func() {
-		_ = os.Chmod(subnetDir, 0700)
-	})
+
+	badRootfsDir := filepath.Join(stateMgr.Dir(vmID), "bad-rootfs")
+	require.NoError(t, os.MkdirAll(badRootfsDir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(badRootfsDir, "nested"), []byte("x"), 0600))
+
+	store := NewStore(stateMgr.Dir(vmID))
+	require.NoError(t, store.Init(vmID, "firecracker", stateMgr.Dir(vmID)))
+	require.NoError(t, store.SetResource(func(r *Resources) {
+		r.RootfsPath = badRootfsDir
+	}))
+	require.NoError(t, store.SetPhase(PhaseCreated))
+	require.NoError(t, store.SetPhase(PhaseStopping))
+	require.NoError(t, store.SetPhase(PhaseStopped))
 
 	err := mgr.Remove(vmID)
 	require.Error(t, err)
@@ -69,10 +78,19 @@ func TestVMManagerPrune_ReconcileFailureDoesNotRemove(t *testing.T) {
 	vmID := "vm-stopped3"
 	require.NoError(t, stateMgr.Register(vmID, map[string]string{"image": "alpine:latest"}))
 	require.NoError(t, stateMgr.Unregister(vmID))
-	require.NoError(t, os.Chmod(subnetDir, 0500))
-	t.Cleanup(func() {
-		_ = os.Chmod(subnetDir, 0700)
-	})
+
+	badRootfsDir := filepath.Join(stateMgr.Dir(vmID), "bad-rootfs")
+	require.NoError(t, os.MkdirAll(badRootfsDir, 0700))
+	require.NoError(t, os.WriteFile(filepath.Join(badRootfsDir, "nested"), []byte("x"), 0600))
+
+	store := NewStore(stateMgr.Dir(vmID))
+	require.NoError(t, store.Init(vmID, "firecracker", stateMgr.Dir(vmID)))
+	require.NoError(t, store.SetResource(func(r *Resources) {
+		r.RootfsPath = badRootfsDir
+	}))
+	require.NoError(t, store.SetPhase(PhaseCreated))
+	require.NoError(t, store.SetPhase(PhaseStopping))
+	require.NoError(t, store.SetPhase(PhaseStopped))
 
 	pruned, err := mgr.Prune()
 	require.Error(t, err)

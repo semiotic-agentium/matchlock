@@ -7,6 +7,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jingkaihe/matchlock/pkg/sdk"
 	"github.com/stretchr/testify/assert"
@@ -234,7 +235,9 @@ func TestMultipleExecsWithUser(t *testing.T) {
 	client := launchWithBuilder(t, builder)
 
 	for i, cmd := range []string{"id -u", "id -g", "whoami"} {
-		result, err := client.Exec(context.Background(), cmd)
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		result, err := client.Exec(ctx, cmd)
+		cancel()
 		require.NoErrorf(t, err, "Exec[%d] %q", i, cmd)
 		assert.Equalf(t, 0, result.ExitCode, "Exec[%d] %q exit code", i, cmd)
 	}

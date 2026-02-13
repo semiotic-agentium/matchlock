@@ -226,6 +226,29 @@ func TestCLIRunVolumeMountSingleFile(t *testing.T) {
 	}
 }
 
+func TestCLIRunVolumeMountRejectsGuestPathOutsideWorkspace(t *testing.T) {
+	hostDir := t.TempDir()
+
+	_, stderr, exitCode := runCLIWithTimeout(
+		t,
+		2*time.Minute,
+		"run",
+		"--image", "alpine:latest",
+		"--workspace", "/workspace/project",
+		"-v", hostDir+":/workspace",
+		"--", "true",
+	)
+	if exitCode == 0 {
+		t.Fatalf("exit code = %d, want non-zero", exitCode)
+	}
+	if !strings.Contains(stderr, "invalid volume mount") {
+		t.Fatalf("stderr = %q, want to contain %q", stderr, "invalid volume mount")
+	}
+	if !strings.Contains(stderr, "must be within workspace") {
+		t.Fatalf("stderr = %q, want to contain %q", stderr, "must be within workspace")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // run --rm=false + exec + kill + rm (full lifecycle)
 // ---------------------------------------------------------------------------

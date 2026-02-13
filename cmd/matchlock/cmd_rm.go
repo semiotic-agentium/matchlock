@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/jingkaihe/matchlock/pkg/state"
+	"github.com/jingkaihe/matchlock/pkg/lifecycle"
 )
 
 var rmCmd = &cobra.Command{
@@ -26,7 +26,7 @@ func init() {
 
 func runRemove(cmd *cobra.Command, args []string) error {
 	stopped, _ := cmd.Flags().GetBool("stopped")
-	mgr := state.NewManager()
+	mgr := lifecycle.NewVMManager()
 
 	if stopped {
 		states, _ := mgr.List()

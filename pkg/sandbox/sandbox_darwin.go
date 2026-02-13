@@ -4,14 +4,17 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 
 	"github.com/google/uuid"
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/lifecycle"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 	"github.com/jingkaihe/matchlock/pkg/state"
@@ -35,6 +38,7 @@ type Sandbox struct {
 	subnetInfo  *state.SubnetInfo
 	subnetAlloc *state.SubnetAllocator
 	workspace   string
+	lifecycle   *lifecycle.Store
 }
 
 type Options struct {
@@ -43,7 +47,7 @@ type Options struct {
 	RootfsPath    string // Required: path to the rootfs image
 }
 
-func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, error) {
+func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, retErr error) {
 	if opts == nil {
 		opts = &Options{}
 	}
@@ -58,6 +62,21 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	if err := stateMgr.Register(id, config); err != nil {
 		return nil, errx.Wrap(ErrRegisterState, err)
 	}
+	lifecycleStore := lifecycle.NewStore(stateMgr.Dir(id))
+	if err := lifecycleStore.Init(id, "virtualization.framework", stateMgr.Dir(id)); err != nil {
+		stateMgr.Unregister(id)
+		return nil, errx.Wrap(ErrLifecycleInit, err)
+	}
+	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+		r.StateDir = stateMgr.Dir(id)
+		r.Workspace = workspace
+	})
+	defer func() {
+		if retErr != nil {
+			_ = lifecycleStore.SetLastError(retErr)
+			_ = lifecycleStore.SetPhase(lifecycle.PhaseCreateFailed)
+		}
+	}()
 
 	subnetAlloc := state.NewSubnetAllocator()
 	subnetInfo, err := subnetAlloc.Allocate(id)
@@ -65,6 +84,11 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrAllocateSubnet, err)
 	}
+	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+		r.GatewayIP = subnetInfo.GatewayIP
+		r.GuestIP = subnetInfo.GuestIP
+		r.SubnetCIDR = subnetInfo.Subnet
+	})
 
 	backend := darwin.NewDarwinBackend()
 
@@ -92,14 +116,17 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		}
 	}
 
-	// Copy rootfs, inject matchlock components, and resize before backend.Create()
-	// so the VZ disk attachment sees the final size with all components in place
-	prebuiltRootfs, err := darwin.CopyRootfsToTemp(rootfsPath)
-	if err != nil {
+	// Copy rootfs into the VM state directory, then inject components and resize
+	// before backend.Create() so VZ sees the final image.
+	prebuiltRootfs := filepath.Join(stateMgr.Dir(id), "rootfs.ext4")
+	if err := copyRootfsDarwin(rootfsPath, prebuiltRootfs); err != nil {
 		subnetAlloc.Release(id)
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCopyRootfs, err)
 	}
+	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+		r.RootfsPath = prebuiltRootfs
+	})
 	var diskSizeMB int64
 	if config.Resources != nil {
 		diskSizeMB = int64(config.Resources.DiskSizeMB)
@@ -139,7 +166,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		ID:              id,
 		KernelPath:      kernelPath,
 		InitramfsPath:   initramfsPath,
-		RootfsPath:      rootfsPath,
+		RootfsPath:      prebuiltRootfs,
 		CPUs:            config.Resources.CPUs,
 		MemoryMB:        config.Resources.MemoryMB,
 		SocketPath:      stateMgr.SocketPath(id) + ".sock",
@@ -154,6 +181,9 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		ExtraDisks:      extraDisks,
 		DNSServers:      config.Network.GetDNSServers(),
 	}
+	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
+	})
 
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
@@ -254,7 +284,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		}
 	}()
 
-	return &Sandbox{
+	sb = &Sandbox{
 		id:          id,
 		config:      config,
 		machine:     machine,
@@ -269,7 +299,17 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		subnetInfo:  subnetInfo,
 		subnetAlloc: subnetAlloc,
 		workspace:   workspace,
-	}, nil
+		lifecycle:   lifecycleStore,
+	}
+	if err := lifecycleStore.SetPhase(lifecycle.PhaseCreated); err != nil {
+		_ = sb.Close(ctx)
+		return nil, errx.Wrap(ErrLifecycleUpdate, err)
+	}
+	if err := lifecycleStore.SetLastError(nil); err != nil {
+		_ = sb.Close(ctx)
+		return nil, errx.Wrap(ErrLifecycleUpdate, err)
+	}
+	return sb, nil
 }
 
 func (s *Sandbox) ID() string                 { return s.id }
@@ -280,11 +320,51 @@ func (s *Sandbox) Policy() *policy.Engine     { return s.policy }
 func (s *Sandbox) CAPool() *sandboxnet.CAPool { return s.caPool }
 
 func (s *Sandbox) Start(ctx context.Context) error {
-	return s.machine.Start(ctx)
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseStarting); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+	}
+	if err := s.machine.Start(ctx); err != nil {
+		if s.lifecycle != nil {
+			_ = s.lifecycle.SetLastError(err)
+			_ = s.lifecycle.SetPhase(lifecycle.PhaseStartFailed)
+		}
+		return err
+	}
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseRunning); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+		if err := s.lifecycle.SetLastError(nil); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+	}
+	return nil
 }
 
 func (s *Sandbox) Stop(ctx context.Context) error {
-	return s.machine.Stop(ctx)
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseStopping); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+	}
+	if err := s.machine.Stop(ctx); err != nil {
+		if s.lifecycle != nil {
+			_ = s.lifecycle.SetLastError(err)
+			_ = s.lifecycle.SetPhase(lifecycle.PhaseStopFailed)
+		}
+		return err
+	}
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseStopped); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+		if err := s.lifecycle.SetLastError(nil); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+	}
+	return nil
 }
 
 func (s *Sandbox) PrepareExecEnv() *api.ExecOptions {
@@ -317,26 +397,81 @@ func (s *Sandbox) Events() <-chan api.Event {
 
 func (s *Sandbox) Close(ctx context.Context) error {
 	var errs []error
+	markCleanup := func(name string, opErr error) {
+		if s.lifecycle == nil {
+			return
+		}
+		if err := s.lifecycle.MarkCleanup(name, opErr); err != nil {
+			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+		}
+	}
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseStopping); err != nil {
+			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+		}
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseCleaning); err != nil {
+			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+		}
+	}
 
 	if s.vfsStopFunc != nil {
 		s.vfsStopFunc()
+		markCleanup("vfs_stop", nil)
+	} else {
+		markCleanup("vfs_stop", nil)
 	}
 	if s.netStack != nil {
-		s.netStack.Close()
+		if err := s.netStack.Close(); err != nil {
+			errs = append(errs, errx.Wrap(ErrNetworkStack, err))
+			markCleanup("netstack_close", err)
+		} else {
+			markCleanup("netstack_close", nil)
+		}
+	} else {
+		markCleanup("netstack_close", nil)
 	}
 
 	if s.subnetAlloc != nil {
-		s.subnetAlloc.Release(s.id)
+		if err := s.subnetAlloc.Release(s.id); err != nil {
+			errs = append(errs, errx.Wrap(ErrReleaseSubnet, err))
+			markCleanup("subnet_release", err)
+		} else {
+			markCleanup("subnet_release", nil)
+		}
+	} else {
+		markCleanup("subnet_release", nil)
 	}
 
 	close(s.events)
-	s.stateMgr.Unregister(s.id)
+	markCleanup("events_close", nil)
+	if err := s.stateMgr.Unregister(s.id); err != nil {
+		errs = append(errs, errx.Wrap(ErrUnregisterState, err))
+		markCleanup("state_unregister", err)
+	} else {
+		markCleanup("state_unregister", nil)
+	}
 	if err := s.machine.Close(ctx); err != nil {
 		errs = append(errs, errx.Wrap(ErrMachineClose, err))
+		markCleanup("machine_close", err)
+	} else {
+		markCleanup("machine_close", nil)
 	}
 
 	if len(errs) > 0 {
-		fmt.Fprintf(os.Stderr, "Warning: cleanup errors: %v\n", errs)
+		joined := errors.Join(errs...)
+		if s.lifecycle != nil {
+			_ = s.lifecycle.SetLastError(joined)
+			_ = s.lifecycle.SetPhase(lifecycle.PhaseCleanupFailed)
+		}
+		return joined
+	}
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseCleaned); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+		if err := s.lifecycle.SetLastError(nil); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
 	}
 	return nil
 }
@@ -368,4 +503,24 @@ func createProvider(mount api.MountConfig) vfs.Provider {
 	default:
 		return vfs.NewMemoryProvider()
 	}
+}
+
+func copyRootfsDarwin(srcPath, dstPath string) error {
+	src, err := os.Open(srcPath)
+	if err != nil {
+		return err
+	}
+	defer src.Close()
+
+	dst, err := os.Create(dstPath)
+	if err != nil {
+		return err
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, src); err != nil {
+		_ = os.Remove(dstPath)
+		return err
+	}
+	return nil
 }

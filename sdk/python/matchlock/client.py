@@ -106,9 +106,9 @@ class Client:
         """Close the sandbox and clean up resources.
 
         Args:
-            timeout: Seconds to wait for the process to exit. 0 kills the
-                process immediately. When a non-zero timeout expires the
-                process is forcefully killed.
+            timeout: Seconds to wait for the process to exit. 0 uses a short
+                grace period and then force-kills if needed. When a non-zero
+                timeout expires the process is forcefully killed.
         """
         if self._closed:
             return
@@ -118,21 +118,14 @@ class Client:
         if self._process is None or self._process.poll() is not None:
             return
 
-        if timeout <= 0:
-            try:
-                assert self._process.stdin is not None
-                self._process.stdin.close()
-            except Exception:
-                pass
-            try:
-                self._process.kill()
-                self._process.wait(timeout=1)
-            except Exception:
-                pass
-            return
+        effective_timeout = timeout if timeout and timeout > 0 else 2.0
 
         try:
-            self._send_request("close", {"timeout_seconds": timeout})
+            self._send_request(
+                "close",
+                {"timeout_seconds": effective_timeout},
+                timeout=effective_timeout + 1.0,
+            )
         except Exception:
             pass
 
@@ -143,7 +136,7 @@ class Client:
             pass
 
         try:
-            self._process.wait(timeout=timeout)
+            self._process.wait(timeout=effective_timeout)
         except Exception:
             try:
                 self._process.kill()

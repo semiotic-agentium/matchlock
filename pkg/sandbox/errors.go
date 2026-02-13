@@ -41,6 +41,12 @@ var (
 	ErrFirewallCleanup = errors.New("firewall cleanup")
 	ErrNATCleanup      = errors.New("NAT cleanup")
 	ErrNetworkFile     = errors.New("get network file")
+	ErrReleaseSubnet   = errors.New("release subnet")
+	ErrUnregisterState = errors.New("unregister VM state")
+	ErrRemoveRootfs    = errors.New("remove rootfs copy")
+	ErrProxyClose      = errors.New("proxy close")
+	ErrLifecycleInit   = errors.New("initialize lifecycle record")
+	ErrLifecycleUpdate = errors.New("update lifecycle record")
 
 	// copyRootfs errors (linux only)
 	ErrOpenSource = errors.New("open source")

@@ -7,7 +7,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
 
-	"github.com/jingkaihe/matchlock/pkg/state"
+	"github.com/jingkaihe/matchlock/pkg/lifecycle"
 )
 
 var killCmd = &cobra.Command{
@@ -25,7 +25,7 @@ func init() {
 
 func runKill(cmd *cobra.Command, args []string) error {
 	all, _ := cmd.Flags().GetBool("all")
-	mgr := state.NewManager()
+	mgr := lifecycle.NewVMManager()
 
 	if all {
 		states, _ := mgr.List()

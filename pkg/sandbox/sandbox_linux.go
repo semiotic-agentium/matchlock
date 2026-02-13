@@ -5,6 +5,7 @@ package sandbox
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/lifecycle"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 	"github.com/jingkaihe/matchlock/pkg/state"
@@ -47,6 +49,7 @@ type Sandbox struct {
 	subnetAlloc *state.SubnetAllocator
 	workspace   string
 	rootfsPath  string
+	lifecycle   *lifecycle.Store
 }
 
 // Options configures sandbox creation.
@@ -58,7 +61,7 @@ type Options struct {
 }
 
 // New creates a new sandbox VM with the given configuration.
-func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, error) {
+func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, retErr error) {
 	if opts == nil {
 		opts = &Options{}
 	}
@@ -73,6 +76,21 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	if err := stateMgr.Register(id, config); err != nil {
 		return nil, errx.Wrap(ErrRegisterState, err)
 	}
+	lifecycleStore := lifecycle.NewStore(stateMgr.Dir(id))
+	if err := lifecycleStore.Init(id, "firecracker", stateMgr.Dir(id)); err != nil {
+		stateMgr.Unregister(id)
+		return nil, errx.Wrap(ErrLifecycleInit, err)
+	}
+	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+		r.StateDir = stateMgr.Dir(id)
+		r.Workspace = workspace
+	})
+	defer func() {
+		if retErr != nil {
+			_ = lifecycleStore.SetLastError(retErr)
+			_ = lifecycleStore.SetPhase(lifecycle.PhaseCreateFailed)
+		}
+	}()
 
 	// Create a copy of the rootfs for this VM (copy-on-write if supported)
 	vmRootfsPath := stateMgr.Dir(id) + "/rootfs.ext4"
@@ -80,6 +98,10 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrCopyRootfs, err)
 	}
+	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+		r.RootfsPath = vmRootfsPath
+		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
+	})
 
 	// Inject matchlock components (guest-agent, guest-fused, init, DNS) and resize
 	var diskSizeMB int64
@@ -118,6 +140,11 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		stateMgr.Unregister(id)
 		return nil, errx.Wrap(ErrAllocateSubnet, err)
 	}
+	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+		r.GatewayIP = subnetInfo.GatewayIP
+		r.GuestIP = subnetInfo.GuestIP
+		r.SubnetCIDR = subnetInfo.Subnet
+	})
 
 	backend := linux.NewLinuxBackend()
 
@@ -167,6 +194,11 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 	}
 
 	linuxMachine := machine.(*linux.LinuxMachine)
+	_ = lifecycleStore.SetResource(func(r *lifecycle.Resources) {
+		r.TAPName = linuxMachine.TapName()
+		r.FirewallTable = "matchlock_" + linuxMachine.TapName()
+		r.NATTable = "matchlock_nat_" + linuxMachine.TapName()
+	})
 
 	// Auto-add secret hosts to allowed hosts if secrets are defined
 	if config.Network != nil && len(config.Network.Secrets) > 0 {
@@ -256,7 +288,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		return nil, errx.Wrap(ErrVFSServer, err)
 	}
 
-	return &Sandbox{
+	sb = &Sandbox{
 		id:          id,
 		config:      config,
 		machine:     machine,
@@ -275,7 +307,17 @@ func New(ctx context.Context, config *api.Config, opts *Options) (*Sandbox, erro
 		subnetAlloc: subnetAlloc,
 		workspace:   workspace,
 		rootfsPath:  vmRootfsPath,
-	}, nil
+		lifecycle:   lifecycleStore,
+	}
+	if err := lifecycleStore.SetPhase(lifecycle.PhaseCreated); err != nil {
+		_ = sb.Close(ctx)
+		return nil, errx.Wrap(ErrLifecycleUpdate, err)
+	}
+	if err := lifecycleStore.SetLastError(nil); err != nil {
+		_ = sb.Close(ctx)
+		return nil, errx.Wrap(ErrLifecycleUpdate, err)
+	}
+	return sb, nil
 }
 
 // ID returns the sandbox identifier.
@@ -297,12 +339,52 @@ func (s *Sandbox) CAPool() *sandboxnet.CAPool { return s.caPool }
 
 // Start starts the sandbox VM.
 func (s *Sandbox) Start(ctx context.Context) error {
-	return s.machine.Start(ctx)
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseStarting); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+	}
+	if err := s.machine.Start(ctx); err != nil {
+		if s.lifecycle != nil {
+			_ = s.lifecycle.SetLastError(err)
+			_ = s.lifecycle.SetPhase(lifecycle.PhaseStartFailed)
+		}
+		return err
+	}
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseRunning); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+		if err := s.lifecycle.SetLastError(nil); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+	}
+	return nil
 }
 
 // Stop stops the sandbox VM.
 func (s *Sandbox) Stop(ctx context.Context) error {
-	return s.machine.Stop(ctx)
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseStopping); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+	}
+	if err := s.machine.Stop(ctx); err != nil {
+		if s.lifecycle != nil {
+			_ = s.lifecycle.SetLastError(err)
+			_ = s.lifecycle.SetPhase(lifecycle.PhaseStopFailed)
+		}
+		return err
+	}
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseStopped); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+		if err := s.lifecycle.SetLastError(nil); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+	}
+	return nil
 }
 
 func (s *Sandbox) PrepareExecEnv() *api.ExecOptions {
@@ -337,41 +419,111 @@ func (s *Sandbox) Events() <-chan api.Event {
 // Close shuts down the sandbox and releases all resources.
 func (s *Sandbox) Close(ctx context.Context) error {
 	var errs []error
+	markCleanup := func(name string, opErr error) {
+		if s.lifecycle == nil {
+			return
+		}
+		if err := s.lifecycle.MarkCleanup(name, opErr); err != nil {
+			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+		}
+	}
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseStopping); err != nil {
+			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+		}
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseCleaning); err != nil {
+			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
+		}
+	}
 
 	if s.vfsStopFunc != nil {
 		s.vfsStopFunc()
+		markCleanup("vfs_stop", nil)
+	} else {
+		markCleanup("vfs_stop", nil)
 	}
 	if s.fwRules != nil {
 		if err := s.fwRules.Cleanup(); err != nil {
 			errs = append(errs, errx.Wrap(ErrFirewallCleanup, err))
+			markCleanup("firewall_cleanup", err)
+		} else {
+			markCleanup("firewall_cleanup", nil)
 		}
+	} else {
+		markCleanup("firewall_cleanup", nil)
 	}
 	if s.natRules != nil {
 		if err := s.natRules.Cleanup(); err != nil {
 			errs = append(errs, errx.Wrap(ErrNATCleanup, err))
+			markCleanup("nat_cleanup", err)
+		} else {
+			markCleanup("nat_cleanup", nil)
 		}
+	} else {
+		markCleanup("nat_cleanup", nil)
 	}
 	if s.proxy != nil {
-		s.proxy.Close()
+		if err := s.proxy.Close(); err != nil {
+			errs = append(errs, errx.Wrap(ErrProxyClose, err))
+			markCleanup("proxy_close", err)
+		} else {
+			markCleanup("proxy_close", nil)
+		}
+	} else {
+		markCleanup("proxy_close", nil)
 	}
 
 	// Release subnet allocation
 	if s.subnetAlloc != nil {
-		s.subnetAlloc.Release(s.id)
+		if err := s.subnetAlloc.Release(s.id); err != nil {
+			errs = append(errs, errx.Wrap(ErrReleaseSubnet, err))
+			markCleanup("subnet_release", err)
+		} else {
+			markCleanup("subnet_release", nil)
+		}
+	} else {
+		markCleanup("subnet_release", nil)
 	}
 
 	close(s.events)
-	s.stateMgr.Unregister(s.id)
+	markCleanup("events_close", nil)
+	if err := s.stateMgr.Unregister(s.id); err != nil {
+		errs = append(errs, errx.Wrap(ErrUnregisterState, err))
+		markCleanup("state_unregister", err)
+	} else {
+		markCleanup("state_unregister", nil)
+	}
 	if err := s.machine.Close(ctx); err != nil {
 		errs = append(errs, errx.Wrap(ErrMachineClose, err))
+		markCleanup("machine_close", err)
+	} else {
+		markCleanup("machine_close", nil)
 	}
 
 	// Remove rootfs copy to save disk space
 	rootfsCopy := s.stateMgr.Dir(s.id) + "/rootfs.ext4"
-	os.Remove(rootfsCopy)
+	if err := os.Remove(rootfsCopy); err != nil && !os.IsNotExist(err) {
+		errs = append(errs, errx.Wrap(ErrRemoveRootfs, err))
+		markCleanup("rootfs_remove", err)
+	} else {
+		markCleanup("rootfs_remove", nil)
+	}
 
 	if len(errs) > 0 {
-		fmt.Fprintf(os.Stderr, "Warning: cleanup errors: %v\n", errs)
+		joined := errors.Join(errs...)
+		if s.lifecycle != nil {
+			_ = s.lifecycle.SetLastError(joined)
+			_ = s.lifecycle.SetPhase(lifecycle.PhaseCleanupFailed)
+		}
+		return joined
+	}
+	if s.lifecycle != nil {
+		if err := s.lifecycle.SetPhase(lifecycle.PhaseCleaned); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
+		if err := s.lifecycle.SetLastError(nil); err != nil {
+			return errx.Wrap(ErrLifecycleUpdate, err)
+		}
 	}
 	return nil
 }

@@ -1,22 +1,25 @@
 package state
 
 import (
-	"encoding/json"
+	"database/sql"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 )
 
 // SubnetAllocator manages unique /24 subnet allocation for VMs
-// Uses 192.168.X.0/24 where X ranges from 100-254
+// Uses 192.168.X.0/24 where X ranges from 100-254.
 type SubnetAllocator struct {
 	mu       sync.Mutex
 	baseDir  string
 	minOctet int
 	maxOctet int
+	db       *sql.DB
+	initErr  error
 }
 
 type SubnetInfo struct {
@@ -30,37 +33,48 @@ type SubnetInfo struct {
 func NewSubnetAllocator() *SubnetAllocator {
 	home, _ := os.UserHomeDir()
 	baseDir := filepath.Join(home, ".matchlock", "subnets")
-	os.MkdirAll(baseDir, 0755)
+	return NewSubnetAllocatorWithDir(baseDir)
+}
 
+func NewSubnetAllocatorWithDir(baseDir string) *SubnetAllocator {
+	db, err := openStateDB(baseDir)
 	return &SubnetAllocator{
 		baseDir:  baseDir,
 		minOctet: 100,
 		maxOctet: 254,
+		db:       db,
+		initErr:  err,
 	}
 }
 
-// Allocate assigns a unique subnet to a VM
+func (a *SubnetAllocator) ready() error {
+	if a.initErr != nil {
+		return errx.Wrap(ErrStateDBInit, a.initErr)
+	}
+	if a.db == nil {
+		return ErrStateDBInit
+	}
+	return nil
+}
+
+// Allocate assigns a unique subnet to a VM.
 func (a *SubnetAllocator) Allocate(vmID string) (*SubnetInfo, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	// Find an available octet
-	used := make(map[int]bool)
-	entries, _ := os.ReadDir(a.baseDir)
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			data, err := os.ReadFile(filepath.Join(a.baseDir, entry.Name()))
-			if err != nil {
-				continue
-			}
-			var info SubnetInfo
-			if json.Unmarshal(data, &info) == nil {
-				used[info.Octet] = true
-			}
-		}
+	if err := a.ready(); err != nil {
+		return nil, err
 	}
 
-	// Find first available octet
+	if existing, err := a.Get(vmID); err == nil {
+		return existing, nil
+	}
+
+	used, err := a.usedOctets()
+	if err != nil {
+		return nil, err
+	}
+
 	var octet int
 	for o := a.minOctet; o <= a.maxOctet; o++ {
 		if !used[o] {
@@ -68,7 +82,6 @@ func (a *SubnetAllocator) Allocate(vmID string) (*SubnetInfo, error) {
 			break
 		}
 	}
-
 	if octet == 0 {
 		return nil, errx.With(ErrNoAvailableSubnets, " (all %d-%d in use)", a.minOctet, a.maxOctet)
 	}
@@ -81,67 +94,112 @@ func (a *SubnetAllocator) Allocate(vmID string) (*SubnetInfo, error) {
 		VMID:      vmID,
 	}
 
-	// Save allocation
-	data, _ := json.Marshal(info)
-	if err := os.WriteFile(filepath.Join(a.baseDir, vmID+".json"), data, 0644); err != nil {
+	_, err = a.db.Exec(
+		`INSERT INTO subnet_allocations (vm_id, octet, gateway_ip, guest_ip, subnet, created_at)
+		 VALUES (?, ?, ?, ?, ?, ?)`,
+		info.VMID,
+		info.Octet,
+		info.GatewayIP,
+		info.GuestIP,
+		info.Subnet,
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
 		return nil, errx.Wrap(ErrSaveSubnetAllocation, err)
 	}
-
 	return info, nil
 }
 
-// Release frees a subnet allocation
+func (a *SubnetAllocator) usedOctets() (map[int]bool, error) {
+	rows, err := a.db.Query(`SELECT octet FROM subnet_allocations`)
+	if err != nil {
+		return nil, errx.Wrap(ErrSaveSubnetAllocation, err)
+	}
+	defer rows.Close()
+
+	used := make(map[int]bool)
+	for rows.Next() {
+		var octet int
+		if err := rows.Scan(&octet); err != nil {
+			return nil, errx.Wrap(ErrSaveSubnetAllocation, err)
+		}
+		used[octet] = true
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errx.Wrap(ErrSaveSubnetAllocation, err)
+	}
+	return used, nil
+}
+
+// Release frees a subnet allocation.
 func (a *SubnetAllocator) Release(vmID string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	path := filepath.Join(a.baseDir, vmID+".json")
-	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+	if err := a.ready(); err != nil {
 		return err
+	}
+
+	if _, err := a.db.Exec(`DELETE FROM subnet_allocations WHERE vm_id = ?`, vmID); err != nil {
+		return errx.Wrap(ErrSaveSubnetAllocation, err)
 	}
 	return nil
 }
 
-// Get retrieves subnet info for a VM
+// Get retrieves subnet info for a VM.
 func (a *SubnetAllocator) Get(vmID string) (*SubnetInfo, error) {
-	path := filepath.Join(a.baseDir, vmID+".json")
-	data, err := os.ReadFile(path)
-	if err != nil {
+	if err := a.ready(); err != nil {
 		return nil, err
 	}
 
+	row := a.db.QueryRow(`SELECT octet, gateway_ip, guest_ip, subnet, vm_id FROM subnet_allocations WHERE vm_id = ?`, vmID)
 	var info SubnetInfo
-	if err := json.Unmarshal(data, &info); err != nil {
-		return nil, err
+	if err := row.Scan(&info.Octet, &info.GatewayIP, &info.GuestIP, &info.Subnet, &info.VMID); err != nil {
+		if err == sql.ErrNoRows {
+			return nil, fmt.Errorf("subnet allocation not found for %s", vmID)
+		}
+		return nil, errx.Wrap(ErrSaveSubnetAllocation, err)
 	}
 	return &info, nil
 }
 
-// Cleanup removes all stale subnet allocations (VMs that no longer exist)
+// Cleanup removes all stale subnet allocations (VMs that no longer exist).
 func (a *SubnetAllocator) Cleanup(mgr *Manager) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	entries, err := os.ReadDir(a.baseDir)
-	if err != nil {
+	if err := a.ready(); err != nil {
 		return err
 	}
 
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
+	rows, err := a.db.Query(`SELECT vm_id FROM subnet_allocations`)
+	if err != nil {
+		return errx.Wrap(ErrSaveSubnetAllocation, err)
+	}
+	defer rows.Close()
 
-		vmID := entry.Name()
-		if len(vmID) > 5 && vmID[len(vmID)-5:] == ".json" {
-			vmID = vmID[:len(vmID)-5]
+	var stale []string
+	for rows.Next() {
+		var vmID string
+		if err := rows.Scan(&vmID); err != nil {
+			return errx.Wrap(ErrSaveSubnetAllocation, err)
 		}
-
-		// Check if VM still exists
 		if _, err := mgr.Get(vmID); err != nil {
-			os.Remove(filepath.Join(a.baseDir, entry.Name()))
+			stale = append(stale, vmID)
 		}
 	}
-
+	if err := rows.Err(); err != nil {
+		return errx.Wrap(ErrSaveSubnetAllocation, err)
+	}
+	for _, vmID := range stale {
+		if _, err := a.db.Exec(`DELETE FROM subnet_allocations WHERE vm_id = ?`, vmID); err != nil {
+			return errx.Wrap(ErrSaveSubnetAllocation, err)
+		}
+	}
 	return nil
+}
+
+// AllocationPath is retained for lifecycle/debug compatibility.
+func (a *SubnetAllocator) AllocationPath(vmID string) string {
+	return filepath.Join(a.baseDir, vmID+".json")
 }

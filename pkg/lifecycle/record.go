@@ -146,6 +146,57 @@ func (s *Store) Load() (*Record, error) {
 	return s.loadNoLock()
 }
 
+func (s *Store) History() ([]Record, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if err := s.readyNoLock(); err != nil {
+		return nil, err
+	}
+	vmID := s.resolveVMIDNoLock()
+	if vmID == "" {
+		return nil, nil
+	}
+
+	rows, err := s.db.Query(
+		`SELECT version, vm_id, backend, phase, updated_at, last_error, resources_json, cleanup_json
+		   FROM vm_lifecycle
+		  WHERE vm_id = ?
+		  ORDER BY version ASC`,
+		vmID,
+	)
+	if err != nil {
+		return nil, errx.Wrap(ErrReadRecord, err)
+	}
+	defer rows.Close()
+
+	history := make([]Record, 0, 8)
+	for rows.Next() {
+		var (
+			version       int
+			vmIDRow       string
+			backend       string
+			phase         string
+			updatedAtText string
+			lastError     string
+			resourcesJSON []byte
+			cleanupJSON   []byte
+		)
+		if err := rows.Scan(&version, &vmIDRow, &backend, &phase, &updatedAtText, &lastError, &resourcesJSON, &cleanupJSON); err != nil {
+			return nil, errx.Wrap(ErrReadRecord, err)
+		}
+		rec, err := decodeLifecycleRecord(version, vmIDRow, backend, phase, updatedAtText, lastError, resourcesJSON, cleanupJSON)
+		if err != nil {
+			return nil, err
+		}
+		history = append(history, rec)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, errx.Wrap(ErrReadRecord, err)
+	}
+	return history, nil
+}
+
 func (s *Store) SetPhase(phase Phase) error {
 	return s.Update(func(r *Record) error {
 		if err := validateTransition(r.Phase, phase); err != nil {
@@ -242,9 +293,12 @@ func (s *Store) loadNoLock() (*Record, error) {
 	}
 
 	var (
-		rec           Record
+		version       int
+		vmIDRow       string
+		backend       string
 		phase         string
 		updatedAtText string
+		lastError     string
 		resourcesJSON []byte
 		cleanupJSON   []byte
 	)
@@ -255,7 +309,7 @@ func (s *Store) loadNoLock() (*Record, error) {
 		  ORDER BY version DESC
 		  LIMIT 1`,
 		vmID,
-	).Scan(&rec.Version, &rec.VMID, &rec.Backend, &phase, &updatedAtText, &rec.LastError, &resourcesJSON, &cleanupJSON)
+	).Scan(&version, &vmIDRow, &backend, &phase, &updatedAtText, &lastError, &resourcesJSON, &cleanupJSON)
 	if err == sql.ErrNoRows {
 		return &Record{
 			Version: 0,
@@ -268,30 +322,53 @@ func (s *Store) loadNoLock() (*Record, error) {
 		return nil, errx.Wrap(ErrReadRecord, err)
 	}
 
-	rec.Phase = Phase(phase)
+	rec, err := decodeLifecycleRecord(version, vmIDRow, backend, phase, updatedAtText, lastError, resourcesJSON, cleanupJSON)
+	if err != nil {
+		return nil, err
+	}
+	return &rec, nil
+}
+
+func decodeLifecycleRecord(
+	version int,
+	vmID string,
+	backend string,
+	phase string,
+	updatedAtText string,
+	lastError string,
+	resourcesJSON []byte,
+	cleanupJSON []byte,
+) (Record, error) {
+	rec := Record{
+		Version:   version,
+		VMID:      vmID,
+		Backend:   backend,
+		Phase:     Phase(phase),
+		LastError: lastError,
+		Cleanup:   make(map[string]CleanupResult),
+	}
+
 	if updatedAtText != "" {
 		parsed, parseErr := time.Parse(time.RFC3339Nano, updatedAtText)
 		if parseErr != nil {
 			parsed, parseErr = time.Parse(time.RFC3339, updatedAtText)
 			if parseErr != nil {
-				return nil, errx.Wrap(ErrDecodeRecord, parseErr)
+				return Record{}, errx.Wrap(ErrDecodeRecord, parseErr)
 			}
 		}
 		rec.UpdatedAt = parsed
 	}
 	if len(resourcesJSON) > 0 {
 		if err := json.Unmarshal(resourcesJSON, &rec.Resources); err != nil {
-			return nil, errx.Wrap(ErrDecodeRecord, err)
+			return Record{}, errx.Wrap(ErrDecodeRecord, err)
 		}
 	}
-
-	rec.Cleanup = make(map[string]CleanupResult)
 	if len(cleanupJSON) > 0 {
 		if err := json.Unmarshal(cleanupJSON, &rec.Cleanup); err != nil {
-			return nil, errx.Wrap(ErrDecodeRecord, err)
+			return Record{}, errx.Wrap(ErrDecodeRecord, err)
 		}
 	}
-	return &rec, nil
+	return rec, nil
 }
 
 func (s *Store) saveNoLock(rec *Record) error {

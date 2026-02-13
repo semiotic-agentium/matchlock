@@ -81,6 +81,37 @@ func TestCLILifecycle(t *testing.T) {
 		assert.Equal(t, "running", state["status"])
 	})
 
+	// --- inspect ---
+	t.Run("inspect", func(t *testing.T) {
+		stdout, _, exitCode := runCLI(t, "inspect", vmID)
+		require.Equal(t, 0, exitCode)
+
+		var out struct {
+			VM        map[string]interface{}   `json:"vm"`
+			Lifecycle map[string]interface{}   `json:"lifecycle"`
+			History   []map[string]interface{} `json:"history"`
+		}
+		err := json.Unmarshal([]byte(stdout), &out)
+		require.NoErrorf(t, err, "inspect output is not valid JSON: %s", stdout)
+
+		assert.Equal(t, vmID, out.VM["id"])
+		assert.Equal(t, vmID, out.Lifecycle["vm_id"])
+		assert.NotEmpty(t, out.History)
+	})
+
+	// --- stat (alias of inspect) ---
+	t.Run("stat", func(t *testing.T) {
+		stdout, _, exitCode := runCLI(t, "stat", vmID)
+		require.Equal(t, 0, exitCode)
+
+		var out struct {
+			VM map[string]interface{} `json:"vm"`
+		}
+		err := json.Unmarshal([]byte(stdout), &out)
+		require.NoErrorf(t, err, "stat output is not valid JSON: %s", stdout)
+		assert.Equal(t, vmID, out.VM["id"])
+	})
+
 	// --- exec ---
 	t.Run("exec", func(t *testing.T) {
 		stdout, _, exitCode := runCLIWithTimeout(t, 30*time.Second, "exec", vmID, "echo", "from-exec")

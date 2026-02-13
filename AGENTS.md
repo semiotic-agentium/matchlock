@@ -1,444 +1,157 @@
-# Matchlock - Go-Based Cross-Platform Sandbox
+# Matchlock Agent Guide
 
-A lightweight micro-VM sandbox for running AI-generated code securely with network interception and secret protection.
+Concise contributor guide for working in this repo.
 
-## Tech Stack
+## What Matchlock Is
 
-- **Language**: Go 1.25
-- **VM Backend**: Firecracker microVMs (Linux), Virtualization.framework (macOS/Apple Silicon only, Intel not supported)
-- **Network**: nftables transparent proxy (Linux), Apple native NAT or gVisor userspace TCP/IP stack (macOS), HTTP/TLS MITM
-- **Filesystem**: Pluggable VFS providers (Memory, RealFS, Readonly, Overlay)
-- **Communication**: Vsock for host-guest, JSON-RPC 2.0 for API
+Matchlock is a Go-based micro-VM sandbox for running AI-generated code with:
+- cross-platform VM backends (Linux + macOS/Apple Silicon)
+- network interception/policy controls
+- secret protection
+- host-guest communication over vsock
+- JSON-RPC control surface
 
-## Project Structure
+## Core Stack
 
-```
-matchlock/
-├── cmd/
-│   ├── matchlock/        # CLI entrypoint
-│   ├── guest-agent/      # In-VM agent for command execution
-│   └── guest-fused/      # In-VM FUSE daemon for VFS
-├── pkg/
-│   ├── api/              # Core types (Config, VM, Events, Hooks)
-│   ├── client/           # Client library for connecting to sandboxes
-│   ├── image/            # OCI/Docker image builder
-│   ├── kernel/           # Kernel version management and OCI distribution
-│   ├── net/              # Network stack (TAP, HTTP/TLS MITM, CA injection)
-│   ├── policy/           # Policy engine (allowlists, secrets)
-│   ├── rpc/              # JSON-RPC handler
-│   ├── sandbox/          # Core sandbox management + exec relay
-│   ├── sdk/              # Go SDK for programmatic sandbox usage
-│   ├── state/            # VM state management
-│   ├── vfs/              # Virtual filesystem providers and server
-│   │   └── client/       # VFS client for guest FUSE
-│   ├── vm/               # VM backend interface
-│   │   ├── darwin/       # macOS/Virtualization.framework implementation
-│   │   └── linux/        # Linux/Firecracker implementation
-│   └── vsock/            # Vsock communication layer
-├── internal/
-│   └── errx/             # Shared sentinel error wrapping helpers
-├── guest/
-│   ├── kernel/           # Guest kernel Dockerfile + per-arch .config files
-│   ├── initramfs/        # Guest initramfs setup
-│   └── fused/            # Guest FUSE daemon resources
-├── sdk/
-│   └── python/           # Python SDK
-├── examples/
-│   ├── go/               # Go usage examples
-│   └── python/           # Python usage examples
-├── scripts/              # Build scripts for kernel/rootfs
-└── bin/                  # Built binaries
-```
+- Go 1.25
+- Linux VM backend: Firecracker (`pkg/vm/linux`)
+- macOS VM backend: Virtualization.framework (`pkg/vm/darwin`)
+- Network:
+  - Linux: nftables transparent proxy + HTTP/TLS MITM
+  - macOS: native NAT or gVisor userspace stack when interception is required
+- VFS: pluggable providers in `pkg/vfs`
 
-## Build & Development
+## Repo Map (High Signal)
 
-This project uses [mise](https://mise.jdx.dev/) for task management and dev dependencies. Run `mise tasks` to list all available tasks.
+- `cmd/matchlock`: CLI
+- `cmd/guest-agent`: in-VM exec agent
+- `cmd/guest-fused`: in-VM FUSE daemon
+- `pkg/sandbox`: sandbox lifecycle + exec relay
+- `pkg/image`: image pull/import/build + rootfs prep
+- `pkg/net`: interception, MITM, policy plumbing
+- `pkg/rpc`: JSON-RPC server
+- `pkg/policy`: allowlist + secret replacement
+- `pkg/state`: VM/subnet state on host
+- `internal/errx`: sentinel error wrapping helpers
 
-> **Important:** Always use `mise run build` to compile binaries rather than `go build` directly. On macOS it handles codesigning (required for Virtualization.framework entitlements). On Linux it cross-compiles the guest binaries for the correct architecture.
+## Build and Setup (Must Follow)
+
+Always build with `mise`, not raw `go build`.
 
 ```bash
-mise install         # Install dev dependencies (Go, golangci-lint, crane)
-mise run build       # Build CLI (codesigned on macOS) + guest binaries
-mise run test        # Run tests
-mise run check       # Run all checks (fmt, vet, lint, test, check:errx)
-mise run check:errx  # Ensure sentinel wrapping uses internal/errx helpers
-mise run fmt         # Format code
+# one-time local tooling install
+mise install
 ```
 
-**macOS:**
 ```bash
-mise run setup:darwin   # Build + codesign CLI + guest binaries
+# macOS (usable, codesigned binary for usage and acceptance tests)
+mise run build
+
+# Linux (usable binary + one-time capability/network setup)
+mise run build && sudo ./bin/matchlock setup linux
 ```
 
-**Linux:**
+Linux sudo rule:
+- Use `sudo` only for the one-time `setup linux` command above.
+- Do not run `matchlock run` or `matchlock exec` with `sudo`.
+- NEVER EVER run `matchlock` with `sudo`.
+
+## Test and Check
+
 ```bash
-mise run build && sudo ./bin/matchlock setup linux   # Build + configure Firecracker, KVM, capabilities, nftables
-mise run setup                                       # Or: full setup (firecracker + images + install)
+mise run test
+mise run test:acceptance
+mise run test:coverage
+mise run check
+mise run check:errx
+mise run fmt
 ```
 
-**Kernels** are auto-downloaded from GHCR on first run. Override with `MATCHLOCK_KERNEL=/path/to/kernel`.
+Testing standard:
+- Use `testify/require` and `testify/assert`.
+- Use `require` for hard preconditions; `assert` for follow-on checks.
 
-**Testing:**
-```bash
-mise run test              # Unit tests
-mise run test:acceptance   # Acceptance tests (requires VM support, builds first)
-mise run test:coverage     # Coverage report
+## Coding Standards (Explicit)
+
+### Error handling
+
+Use sentinel errors per package (`errors.go`) and wrap with `internal/errx`.
+
+- Define sentinels with `errors.New`.
+- Wrap underlying errors with `errx.Wrap`.
+- Add context with `errx.With`.
+- Use `errors.Is` at call sites.
+- Avoid direct `%w` `fmt.Errorf` in packages (enforced by `mise run check:errx`).
+
+Example pattern:
+
+```go
+var ErrParseReference = errors.New("parse image reference")
+
+if err != nil {
+    return errx.Wrap(ErrParseReference, err)
+}
 ```
 
-> **Convention:** Use `github.com/stretchr/testify/assert` and `github.com/stretchr/testify/require` for test assertions instead of manual `if/t.Fatal`/`t.Errorf` patterns. Use `require` when a failure should stop the test immediately, and `assert` when subsequent checks should still run.
+### CLI/runtime behavior
 
-**Release:**
+- Keep host-side behavior cross-platform unless platform-specific behavior is required.
+- Preserve parity between Linux/macOS guest-agent exec semantics where feasible.
+- Keep cancellation semantics intact (host cancel -> guest process termination).
+
+## Runtime Facts Worth Remembering
+
+### Vsock ports
+
+- `5000`: exec service (host -> guest)
+- `5001`: VFS service (guest -> host)
+- `5002`: ready signal (host -> guest)
+
+### Firecracker vsock connection model
+
+- Host-initiated calls use `CONNECT <port>` on base `vsock.sock`.
+- Guest-initiated calls use `{uds_path}_{port}` listener sockets.
+- Do not mix the two patterns.
+
+### macOS networking modes
+
+- Default: native NAT (no interception).
+- Interception mode activates when policy/secret features require it (for example `--allow-host`, `--secret`).
+
+## JSON-RPC Surface (Current)
+
+- `create`
+- `exec`
+- `exec_stream`
+- `write_file`
+- `read_file`
+- `list_files`
+- `cancel`
+- `close`
+
+`cancel` should reliably stop in-flight execution via context cancellation and connection teardown.
+
+## Kernel and Images (Minimal)
+
+- Kernel version is pinned in `pkg/kernel/kernel.go` and distributed via GHCR.
+- Guest kernel configs live under `guest/kernel/`.
+- Image cache/local store lives under `~/.cache/matchlock/images/`.
+
+## Useful CLI Examples
+
 ```bash
-mise run push-tag          # Push v$VERSION tag → triggers GitHub Actions release
-mise run release           # Manual release (cross-builds + uploads to GitHub)
-```
-
-## CI/CD
-
-- **CI** (`.github/workflows/ci.yml`): Runs on PRs and pushes to `main`. Builds + tests on Linux (ubuntu-latest) and macOS (macos-latest ARM64 only).
-- **Release** (`.github/workflows/release.yml`): Triggered by `v*` tags. Cross-builds for Linux amd64/arm64, macOS arm64 only, publishes GitHub release with all binaries.
-- **Kernel** (`.github/workflows/kernel.yml`): Builds and publishes kernel images to GHCR.
-
-## CLI Usage
-
-```bash
-# Run with container image (--image is required)
 matchlock run --image alpine:latest cat /etc/os-release
-matchlock run --image python:3.12-alpine python3 --version
-
-# Keep sandbox alive after command exits (like docker run without --rm)
-matchlock run --image alpine:latest --rm=false echo hello
-# Prints VM ID (e.g., vm-abc12345), VM stays running
-
-# Start sandbox without running a command
-matchlock run --image alpine:latest --rm=false
-
-# Execute command in a running sandbox
-matchlock exec vm-abc12345 echo hello
-matchlock exec vm-abc12345 -it sh
-
-# Interactive mode (like docker -it)
 matchlock run --image alpine:latest -it sh
-
-# Pipe mode — connect stdin without PTY (for JSON-RPC, ACP, etc.)
-matchlock run --image alpine:latest -i -- cat
-
-# With network allowlist
-matchlock run --image python:3.12-alpine --allow-host "api.openai.com" python agent.py
-
-# With custom DNS servers (default: 8.8.8.8, 8.8.4.4)
-matchlock run --image alpine:latest --dns-servers "1.1.1.1,1.0.0.1" cat /etc/resolv.conf
-
-# With secrets (MITM proxy replaces placeholder with real value)
-export ANTHROPIC_API_KEY=sk-xxx
-matchlock run --image python:3.12-alpine \
-  --secret ANTHROPIC_API_KEY@api.anthropic.com \
-  python call_api.py
-
-# Lifecycle management
-matchlock list                     # List sandboxes
-matchlock kill vm-abc123           # Kill a sandbox
-matchlock kill --all               # Kill all running sandboxes
-matchlock rm vm-abc123             # Remove stopped sandbox state
-matchlock prune                    # Remove all stopped/crashed state
-
-# Pull and cache container image rootfs
-matchlock pull alpine:latest
-matchlock pull --force alpine:latest
-
-# Build from Dockerfile (uses BuildKit-in-VM with privileged mode)
-matchlock build -t myapp:latest .
-matchlock build -t myapp:latest ./myapp
-matchlock build -f Dockerfile.dev -t myapp:latest .
-
-# Run as specific user (overrides image USER)
-matchlock run --image python:3.12-alpine -u nobody python3 -c 'import os; print(os.getuid())'
-matchlock run --image python:3.12-alpine -u 1000:1000 id
-
-# Override entrypoint
-matchlock run --image python:3.12-alpine --entrypoint python3 -- -c 'print(42)'
-
-# Use image ENTRYPOINT+CMD (no command needed if image defines them)
-matchlock run --image nginx:latest
-
-# Privileged mode (skips in-guest seccomp/cap restrictions)
-matchlock run --privileged --image moby/buildkit:rootless -it sh
-
-# RPC mode (for programmatic access)
+matchlock run --image alpine:latest --rm=false
+matchlock exec <vm-id> echo hello
+matchlock list
+matchlock kill <vm-id>
+matchlock prune
 matchlock rpc
 ```
 
-## Key Components
+## Known Constraints
 
-### VM Backend
-
-**Linux (`pkg/vm/linux`):**
-- Creates TAP devices for network virtualization
-- Generates Firecracker configuration with vsock
-- Manages VM lifecycle (start, stop, exec)
-- Vsock-based command execution and ready signaling
-
-**macOS (`pkg/vm/darwin`):**
-- Uses Apple Virtualization.framework via code-hex/vz
-- Two network modes: native NAT (no interception) or Unix socket pairs (passed to gVisor userspace TCP/IP stack for interception)
-- Native virtio-vsock for host-guest communication
-- Same guest agent protocol as Linux (full feature parity)
-- NAT mode selected by default; interception mode activated when `--allow-host` or `--secret` flags are used
-
-### Guest Agent (`cmd/guest-agent`)
-- Runs inside VM to handle exec requests
-- Ready signal service on vsock port 5002
-- Command execution service on vsock port 5000
-- Supports running commands as non-root users via `MATCHLOCK_USER` env var (resolves username/uid:gid from /etc/passwd, calls setuid/setgid before exec)
-- **Cancellation**: All exec modes (batch, stream, TTY) monitor the vsock connection for EOF. When the host closes the connection (due to context cancellation), the guest agent sends SIGTERM, waits a grace period (`cancelGracePeriod = 5s`), then sends SIGKILL if the process is still running
-
-### Guest FUSE Daemon (`cmd/guest-fused`)
-- Mounts VFS from host via vsock at configurable workspace (default: /workspace)
-- Uses go-fuse library for POSIX-compliant FUSE implementation
-- Reads workspace path from kernel cmdline (`matchlock.workspace=`)
-- Connects to VFS server on vsock port 5001
-
-### Image Builder (`pkg/image`)
-- Pulls OCI/Docker images from any registry (Docker Hub, GHCR, etc.)
-- Extracts image layers and converts to ext4 rootfs
-- **Extracts OCI image config** (USER, ENTRYPOINT, CMD, WORKDIR, ENV) from `v1.Image.ConfigFile()` and persists as `OCIConfig` in `metadata.json`
-- Injects matchlock guest components (guest-agent, guest-fused)
-- Creates minimal init script that runs as PID 1
-- Caches built images by digest in `~/.cache/matchlock/images/` with `metadata.json` (original tag, digest, size, timestamp, source, oci config)
-- Supports any Linux container image (Alpine, Ubuntu, Debian, etc.)
-- **Local store** (`~/.cache/matchlock/images/local/`): Stores locally-built/imported images with `rootfs.ext4` + `metadata.json` per tag
-- **Import** (`Builder.Import`): Reads Docker/OCI tarballs (`docker save` format) via `go-containerregistry`, extracts layers, creates ext4 rootfs, saves to local store
-- **Dockerfile build**: Boots a privileged BuildKit-in-VM, mounts build context via VFS, runs `buildctl`, streams result tarball via `ReadFileTo`, imports into local store
-
-### Sandbox Common (`pkg/sandbox/sandbox_common.go`)
-- Shared sandbox logic extracted from platform-specific files (`sandbox_linux.go`, `sandbox_darwin.go`)
-- Contains free functions: `prepareExecEnv()`, `execCommand()`, `writeFile()`, `readFile()`, `readFileTo()`, `listFiles()`
-- Platform files delegate to these via one-line wrappers
-- `ReadFileTo(ctx, path, io.Writer)` streams file content directly to a writer (used for tarball extraction)
-
-### Signal Helper (`cmd/matchlock/signal.go`)
-- `contextWithSignal(parent context.Context) (context.Context, context.CancelFunc)` — cancels on SIGINT/SIGTERM and cleans up the signal handler when context is done
-- Used by `cmd_build.go`, `cmd_exec.go`, `cmd_run.go`, `cmd_rpc.go` to replace duplicated signal boilerplate
-
-### Exec Relay (`pkg/sandbox/exec_relay.go`)
-- Unix socket server (`~/.matchlock/vms/{id}/exec.sock`) enabling cross-process exec
-- The `run --rm=false` host process serves the relay; `matchlock exec` connects to it
-- Supports non-interactive, pipe (`-i`), and interactive TTY (`-it`) exec modes
-- Works cross-platform (Linux + macOS) without direct vsock access from external processes
-
-### Policy Engine (`pkg/policy`)
-- Host allowlisting with glob patterns
-- Secret injection with placeholder replacement
-- Private IP blocking
-
-### VFS Providers (`pkg/vfs`)
-- `MemoryProvider`: In-memory filesystem
-- `RealFSProvider`: Host directory mapping
-- `ReadonlyProvider`: Read-only wrapper
-- `OverlayProvider`: Copy-on-write overlay
-- `MountRouter`: Route paths to providers
-- `VFSServer`: CBOR protocol server for guest FUSE
-
-### Network Stack (`pkg/net`)
-
-**Linux:**
-- `TransparentProxy`: nftables DNAT redirects ports 80/443 to HTTP/HTTPS proxy, all other TCP to passthrough proxy; uses `SO_ORIGINAL_DST` to recover original destination
-- `NFTablesRules`: Manages PREROUTING DNAT and FORWARD rules via netlink (no shell commands). Port 80→HTTP handler, port 443→HTTPS handler, catch-all→passthrough handler (policy-gated raw TCP relay)
-- NAT masquerade auto-detects default interface
-- Kernel handles TCP/IP; HTTP/HTTPS traffic goes through MITM inspection, non-standard ports go through policy-gated passthrough
-
-**macOS (two modes):**
-- **NAT mode** (default): Uses Apple Virtualization.framework's built-in NAT with DHCP — no traffic interception, simplest path for unrestricted networking
-- **Interception mode** (when `--allow-host` or `--secret` is used): Unix socket pairs pass raw Ethernet frames to gVisor userspace TCP/IP stack (`socketPairEndpoint`); promiscuous + spoofing mode lets gVisor act as transparent gateway with TCP/UDP forwarders intercepting all connections at L4
-
-**Shared:**
-- `HTTPInterceptor`: HTTP interception with Host header-based policy checking
-- HTTPS MITM via dynamic certificate generation
-- `CAPool`: CA certificate generation and per-domain cert caching
-- Policy-based request/response modification
-
-### Vsock Layer (`pkg/vsock`)
-- Pure Go vsock implementation (AF_VSOCK=40)
-- Host-guest communication without network
-- Message protocol for exec requests/responses
-
-### State Management (`pkg/state`)
-- VM state tracking in `~/.matchlock/vms/`
-- **SubnetAllocator**: Dynamic subnet allocation for multiple VMs
-  - Allocates unique /24 subnets from 192.168.100.0 to 192.168.254.0
-  - Persists allocations to `~/.matchlock/subnets/`
-  - Auto-released on VM close
-
-## Vsock Ports
-
-| Port | Service | Direction |
-|------|---------|-----------|
-| 5000 | Command execution | Host → Guest |
-| 5001 | VFS protocol (FUSE) | Guest → Host |
-| 5002 | Ready signal | Host → Guest |
-
-## Firecracker Vsock Protocol
-
-Firecracker exposes vsock via Unix domain sockets with two connection patterns:
-
-### Host-Initiated Connections (exec, ready)
-1. Host connects to base UDS socket (`vsock.sock`)
-2. Host sends `CONNECT <port>\n` (e.g., `CONNECT 5000\n`)
-3. Firecracker responds with `OK <assigned_port>\n`
-4. Connection is established to guest service on that port
-
-### Guest-Initiated Connections (VFS)
-1. Host listens on `{uds_path}_{port}` (e.g., `vsock.sock_5001`)
-2. Guest connects to CID 2 (host) and port
-3. Firecracker forwards to the Unix socket
-
-**Important**: The `{uds_path}_{port}` sockets are only for guest-initiated connections. Host-initiated connections must use the CONNECT protocol on the base socket.
-
-## JSON-RPC Methods
-
-- `create`: Initialize VM with configuration
-- `exec`: Execute command in sandbox (buffered — returns all stdout/stderr in response)
-- `exec_stream`: Execute command with streaming output (stdout/stderr sent as notifications before final response)
-- `write_file`: Write file to sandbox
-- `read_file`: Read file from sandbox
-- `list_files`: List directory contents
-- `cancel`: Cancel an in-flight request by ID. Params: `{"id": <request_id>}`. Triggers context cancellation on the server, which closes the vsock connection to the guest, causing the guest agent to SIGKILL the child process.
-- `close`: Shutdown VM
-
-The RPC handler dispatches `exec`, `exec_stream`, file, and list operations concurrently with per-request `context.WithCancel`. `create` and `close` are serialized (drain in-flight requests first). `cancel` is handled synchronously on the main goroutine.
-
-### exec_stream protocol
-
-Stream notifications (no `id`):
-```json
-{"jsonrpc":"2.0","method":"exec_stream.stdout","params":{"id":2,"data":"<base64>"}}
-{"jsonrpc":"2.0","method":"exec_stream.stderr","params":{"id":2,"data":"<base64>"}}
-```
-
-Final response:
-```json
-{"jsonrpc":"2.0","id":2,"result":{"exit_code":0,"duration_ms":123}}
-```
-
-## CA Certificate Injection
-
-The sandbox intercepts HTTPS traffic via MITM. The CA certificate is automatically injected into the rootfs at `/etc/ssl/certs/matchlock-ca.crt` before the VM starts.
-
-Environment variables are auto-injected:
-
-```bash
-SSL_CERT_FILE=/etc/ssl/certs/matchlock-ca.crt
-REQUESTS_CA_BUNDLE=/etc/ssl/certs/matchlock-ca.crt
-CURL_CA_BUNDLE=/etc/ssl/certs/matchlock-ca.crt
-NODE_EXTRA_CA_CERTS=/etc/ssl/certs/matchlock-ca.crt
-```
-
-## Kernel
-
-- Version: `6.1.137` (constant in `pkg/kernel/kernel.go`)
-- Registry: `ghcr.io/jingkaihe/matchlock/kernel:{version}`
-- Multi-platform manifest with x86_64 and arm64 variants
-- Build: `mise run kernel:build` (uses Docker BuildKit, configs in `guest/kernel/{x86_64,arm64}.config`)
-- Publish: `mise run kernel:publish`
-
-Required kernel options for Firecracker v1.8+:
-- `CONFIG_ACPI=y` and `CONFIG_PCI=y` - Required for virtio device initialization
-- `CONFIG_VIRTIO_MMIO_CMDLINE_DEVICES=y` - Parse `virtio_mmio.device=` from cmdline
-- `CONFIG_VSOCKETS=y` and `CONFIG_VIRTIO_VSOCKETS=y` - Host-guest communication
-- `CONFIG_FUSE_FS=y` - VFS support
-- `CONFIG_IP_PNP=y` - Required for kernel `ip=` boot parameter (network configuration)
-- `CONFIG_CGROUPS=y` - Cgroup support (v1 and v2) with cpu, memory, pids, io, cpuset, freezer controllers
-- `CONFIG_USER_NS=y` - User namespaces for rootless BuildKit support
-
-Required kernel options for BuildKit-in-VM (privileged mode):
-- `CONFIG_BPF=y`, `CONFIG_BPF_SYSCALL=y` - BPF for runc cgroup device management
-- `CONFIG_EXT4_FS_XATTR=y`, `CONFIG_EXT4_FS_POSIX_ACL=y`, `CONFIG_EXT4_FS_SECURITY=y` - ext4 xattr support for container image layers
-- `CONFIG_TMPFS_XATTR=y` - tmpfs xattr support
-- `CONFIG_NAMESPACES=y`, `CONFIG_PID_NS=y`, `CONFIG_NET_NS=y`, `CONFIG_UTS_NS=y`, `CONFIG_IPC_NS=y` - All namespace types for runc
-- `CONFIG_SYSVIPC=y`, `CONFIG_POSIX_MQUEUE=y` - IPC primitives for container runtimes
-- `CONFIG_OVERLAY_FS=y` - Overlay filesystem for container layers
-
-## Configuration
-
-### Workspace Path
-The VFS mount point in the guest is configurable via `VFSConfig.Workspace`. Default is `/workspace`.
-
-```go
-opts := sdk.CreateOptions{
-    Workspace: "/home/user/code",
-}
-```
-
-The workspace path is passed to the guest FUSE daemon via kernel cmdline parameter `matchlock.workspace=`.
-
-### API Config Structure
-```go
-type VFSConfig struct {
-    Workspace    string                 `json:"workspace,omitempty"`  // Guest mount point (default: /workspace)
-    Mounts       map[string]MountConfig `json:"mounts,omitempty"`     // VFS provider mounts
-}
-```
-
-## Error Handling
-
-This project uses the standard library `errors` package with **sentinel errors** for structured, programmatic error handling. Every package that returns errors defines its sentinels in a dedicated `errors.go` file.
-
-### Pattern
-
-1. **Define sentinel errors** in `errors.go` per package using `errors.New`:
-```go
-// pkg/image/errors.go
-package image
-
-import "errors"
-
-var (
-    ErrParseReference = errors.New("parse image reference")
-    ErrPullImage      = errors.New("pull image")
-    ErrExtract        = errors.New("extract image")
-)
-```
-
-2. **Wrap errors** with `internal/errx` helpers:
-```go
-import "github.com/jingkaihe/matchlock/internal/errx"
-
-return errx.Wrap(ErrParseReference, err)
-```
-
-3. **Include dynamic context** (paths, indices, etc.) with `errx.With`:
-```go
-return errx.With(ErrKernelNotFound, " %s: %w", config.KernelPath, err)
-return errx.With(ErrCreateDiskAttachment, " disk %d: %w", i, err)
-```
-
-4. **Return sentinels directly** when there's no underlying error to wrap:
-```go
-return ErrImageNotFound
-```
-
-### Conventions
-
-- **Exported sentinels** (`ErrFoo`) in library packages (`pkg/...`) — callers use `errors.Is(err, pkg.ErrFoo)`
-- **Unexported sentinels** (`errFoo`) in `main` packages, tests, and examples
-- **Group sentinels** by operation category, not by individual call site — e.g., one `ErrExtract` for all tar extraction failures, not separate sentinels per tar operation
-- **Sentinel names** should be concise and describe the operation that failed, without "failed to" prefix — e.g., `ErrCreateSocket` not `ErrFailedToCreateSocket`
-- **Do not** use direct `%w`-prefixed `fmt.Errorf` in packages — use `errx.Wrap` / `errx.With` instead
-- **Guardrail:** `mise run check:errx` fails if `%w`-prefixed `fmt.Errorf` appears outside `internal/errx/errx.go`
-
-### Checking Errors
-
-Callers should use `errors.Is` to check for specific failure modes:
-```go
-if errors.Is(err, image.ErrParseReference) {
-    // handle parse failure
-}
-```
-
-## Known Limitations
-
-### gVisor Dependency
-Uses gVisor's `go` branch (`gvisor.dev/gvisor@go`) which is specifically maintained for Go imports. The `master` branch has test file conflicts (`bridge_test.go` declares wrong package). See [PR #10593](https://github.com/google/gvisor/pull/10593) for details. gVisor's userspace TCP/IP stack is only used on macOS (where nftables is unavailable); Linux uses nftables-based transparent proxy instead.
-
-### Test Coverage
-Tests implemented for: vfs (memory, overlay, readonly, router), policy, net (tls), image (import, store). Acceptance tests for: Dockerfile build. Additional tests needed for: vm/linux, rpc, state, vsock (require mocking).
+- macOS backend supports Apple Silicon only (not Intel).
+- gVisor userspace stack is used on macOS interception path; Linux uses nftables.
+- Some subsystems still need deeper tests (see package tests and acceptance coverage).

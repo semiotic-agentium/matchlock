@@ -49,6 +49,14 @@ class Sandbox:
         self._opts.vfs_interception = config
         return self
 
+    def with_env(self, name: str, value: str) -> Sandbox:
+        self._opts.env[name] = value
+        return self
+
+    def with_env_map(self, env: dict[str, str]) -> Sandbox:
+        self._opts.env.update(env)
+        return self
+
     def allow_host(self, *hosts: str) -> Sandbox:
         self._opts.allowed_hosts.extend(hosts)
         return self

@@ -266,6 +266,9 @@ class CreateOptions:
     mounts: dict[str, MountConfig] = field(default_factory=dict)
     """VFS mount configurations keyed by guest path."""
 
+    env: dict[str, str] = field(default_factory=dict)
+    """Non-secret environment variables available to commands."""
+
     vfs_interception: VFSInterceptionConfig | None = None
     """Host-side VFS interception rules."""
 

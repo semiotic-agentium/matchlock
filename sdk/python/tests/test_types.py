@@ -88,6 +88,7 @@ class TestCreateOptions:
         assert opts.allowed_hosts == []
         assert opts.block_private_ips is False
         assert opts.mounts == {}
+        assert opts.env == {}
         assert opts.vfs_interception is None
         assert opts.secrets == []
         assert opts.workspace == ""
@@ -101,6 +102,9 @@ class TestCreateOptions:
         b = CreateOptions()
         a.allowed_hosts.append("x.com")
         assert b.allowed_hosts == []
+
+        a.env["FOO"] = "bar"
+        assert b.env == {}
 
         a.secrets.append(Secret(name="K", value="V"))
         assert b.secrets == []

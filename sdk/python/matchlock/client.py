@@ -676,6 +676,9 @@ class Client:
                 vfs["interception"] = wire_vfs.to_dict()
             params["vfs"] = vfs
 
+        if opts.env:
+            params["env"] = opts.env
+
         if opts.image_config is not None:
             params["image_config"] = opts.image_config.to_dict()
 

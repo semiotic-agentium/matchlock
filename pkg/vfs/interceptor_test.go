@@ -22,7 +22,7 @@ func TestInterceptProvider_BeforeBlock(t *testing.T) {
 			PathPattern: "/blocked.txt",
 			Action:      HookActionBlock,
 		},
-	}, 1)
+	})
 	defer hooks.Close()
 
 	provider := NewInterceptProvider(NewMemoryProvider(), hooks)
@@ -44,7 +44,7 @@ func TestInterceptProvider_BeforeActionFuncBlock(t *testing.T) {
 				return HookActionBlock
 			},
 		},
-	}, 1)
+	})
 	defer hooks.Close()
 
 	provider := NewInterceptProvider(NewMemoryProvider(), hooks)
@@ -65,7 +65,7 @@ func TestInterceptProvider_OpenWithCreateFlagsUsesCreateHook(t *testing.T) {
 				return HookActionBlock
 			},
 		},
-	}, 1)
+	})
 	defer hooks.Close()
 
 	provider := NewInterceptProvider(NewMemoryProvider(), hooks)
@@ -84,7 +84,7 @@ func TestInterceptProvider_BeforeMutateWrite(t *testing.T) {
 			Action:      HookActionMutateWrite,
 			MutateWrite: []byte("mutated"),
 		},
-	}, 1)
+	})
 	defer hooks.Close()
 
 	provider := NewInterceptProvider(NewMemoryProvider(), hooks)
@@ -121,7 +121,7 @@ func TestInterceptProvider_BeforeMutateWriteDynamic(t *testing.T) {
 				return []byte(strings.Repeat("X", req.Size) + ":" + req.Path), nil
 			},
 		},
-	}, 1)
+	})
 	defer hooks.Close()
 
 	provider := NewInterceptProvider(NewMemoryProvider(), hooks)
@@ -156,7 +156,7 @@ func TestInterceptProvider_BeforeMutateWriteDynamicError(t *testing.T) {
 				return nil, wantErr
 			},
 		},
-	}, 1)
+	})
 	defer hooks.Close()
 
 	provider := NewInterceptProvider(NewMemoryProvider(), hooks)
@@ -168,31 +168,28 @@ func TestInterceptProvider_BeforeMutateWriteDynamicError(t *testing.T) {
 	assert.ErrorIs(t, err, wantErr)
 }
 
-func TestInterceptProvider_ExecAfterSuppressesRecursiveSideEffects(t *testing.T) {
-	hooks := NewHookEngine([]HookRule{
-		{
-			Phase:       HookPhaseAfter,
-			Ops:         []HookOp{HookOpWrite},
-			PathPattern: "/*",
-			Action:      HookActionExecAfter,
-			ExecCommand: "audit",
-		},
-	}, 1)
-	defer hooks.Close()
-
+func TestInterceptProvider_AfterSideEffectSuppressesRecursiveSideEffects(t *testing.T) {
 	var wrapped Provider
 	var hookExecCount atomic.Int32
 
-	hooks.SetExecFunc(func(ctx context.Context, command string) error {
-		hookExecCount.Add(1)
-		h, err := wrapped.Create("/audit.log", 0644)
-		if err != nil {
-			return err
-		}
-		defer h.Close()
-		_, err = h.Write([]byte("hook"))
-		return err
+	hooks := NewHookEngineWithCallbacks([]Hook{
+		{
+			Phase:      HookPhaseAfter,
+			Matcher:    OpPathMatcher{Ops: []HookOp{HookOpWrite}, PathPattern: "/*"},
+			Async:      true,
+			SideEffect: true,
+			After: AfterHookFunc(func(ctx context.Context, req HookRequest, result HookResult) {
+				hookExecCount.Add(1)
+				h, err := wrapped.Create("/audit.log", 0644)
+				if err != nil {
+					return
+				}
+				defer h.Close()
+				_, _ = h.Write([]byte("hook"))
+			}),
+		},
 	})
+	defer hooks.Close()
 
 	wrapped = NewInterceptProvider(NewMemoryProvider(), hooks)
 
@@ -227,7 +224,7 @@ func TestInterceptProvider_CallbackHooks(t *testing.T) {
 				return syscall.EPERM
 			}),
 		},
-	}, 1)
+	})
 	defer hooks.Close()
 
 	provider := NewInterceptProvider(NewMemoryProvider(), hooks)
@@ -238,7 +235,7 @@ func TestInterceptProvider_CallbackHooks(t *testing.T) {
 }
 
 func TestInterceptProvider_EmitsEvents(t *testing.T) {
-	hooks := NewHookEngineWithCallbacks(nil, 1)
+	hooks := NewHookEngineWithCallbacks(nil)
 	defer hooks.Close()
 
 	var gotWrite atomic.Int32

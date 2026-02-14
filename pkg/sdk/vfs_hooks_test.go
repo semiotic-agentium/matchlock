@@ -13,7 +13,6 @@ import (
 
 func TestCompileVFSHooks_SplitsLocalCallbacks(t *testing.T) {
 	cfg := &VFSInterceptionConfig{
-		MaxExecDepth: 2,
 		Rules: []VFSHookRule{
 			{
 				Phase:  VFSHookPhaseBefore,
@@ -26,17 +25,16 @@ func TestCompileVFSHooks_SplitsLocalCallbacks(t *testing.T) {
 				Phase: VFSHookPhaseAfter,
 				Ops:   []VFSHookOp{VFSHookOpWrite},
 				Path:  "/workspace/*",
-				Hook: func(ctx context.Context, client *Client, event VFSHookEvent) error {
+				Hook: func(ctx context.Context, event VFSHookEvent) error {
 					return nil
 				},
 			},
 		},
 	}
 
-	wire, local, localMutate, localAction, maxDepth, err := compileVFSHooks(cfg)
+	wire, local, localMutate, localAction, err := compileVFSHooks(cfg)
 	require.NoError(t, err)
 	require.NotNil(t, wire)
-	assert.Equal(t, int32(2), maxDepth)
 	assert.True(t, wire.EmitEvents)
 	require.Len(t, wire.Rules, 1)
 	assert.Equal(t, "block", wire.Rules[0].Action)
@@ -52,12 +50,12 @@ func TestVFSHookActionConstants(t *testing.T) {
 }
 
 func TestCompileVFSHooks_RejectsBeforeCallback(t *testing.T) {
-	_, _, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
+	_, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
 		Rules: []VFSHookRule{
 			{
 				Name:  "before-callback",
 				Phase: VFSHookPhaseBefore,
-				Hook: func(ctx context.Context, client *Client, event VFSHookEvent) error {
+				Hook: func(ctx context.Context, event VFSHookEvent) error {
 					return nil
 				},
 			},
@@ -89,7 +87,7 @@ func TestCompileVFSHooks_SplitsLocalMutateHooks(t *testing.T) {
 		},
 	}
 
-	wire, localAfter, localMutate, localAction, _, err := compileVFSHooks(cfg)
+	wire, localAfter, localMutate, localAction, err := compileVFSHooks(cfg)
 	require.NoError(t, err)
 	require.NotNil(t, wire)
 	require.Len(t, localAfter, 0)
@@ -100,7 +98,7 @@ func TestCompileVFSHooks_SplitsLocalMutateHooks(t *testing.T) {
 }
 
 func TestCompileVFSHooks_RejectsAfterMutateHook(t *testing.T) {
-	_, _, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
+	_, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
 		Rules: []VFSHookRule{
 			{
 				Name:  "bad-mutate",
@@ -116,7 +114,7 @@ func TestCompileVFSHooks_RejectsAfterMutateHook(t *testing.T) {
 }
 
 func TestCompileVFSHooks_RejectsWireMutateWriteAction(t *testing.T) {
-	_, _, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
+	_, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
 		Rules: []VFSHookRule{
 			{
 				Name:   "wire-mutate",
@@ -130,7 +128,7 @@ func TestCompileVFSHooks_RejectsWireMutateWriteAction(t *testing.T) {
 }
 
 func TestCompileVFSHooks_RejectsWireExecAfterAction(t *testing.T) {
-	_, _, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
+	_, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
 		Rules: []VFSHookRule{
 			{
 				Name:   "wire-exec",
@@ -140,7 +138,48 @@ func TestCompileVFSHooks_RejectsWireExecAfterAction(t *testing.T) {
 		},
 	})
 	require.Error(t, err)
-	assert.ErrorContains(t, err, "requires Hook")
+	assert.ErrorContains(t, err, "unsupported")
+}
+
+func TestCompileVFSHooks_SplitsLocalDangerousCallbacks(t *testing.T) {
+	cfg := &VFSInterceptionConfig{
+		Rules: []VFSHookRule{
+			{
+				Name:  "after-dangerous",
+				Phase: VFSHookPhaseAfter,
+				Ops:   []VFSHookOp{VFSHookOpWrite},
+				Path:  "/workspace/*",
+				DangerousHook: func(ctx context.Context, client *Client, event VFSHookEvent) error {
+					return nil
+				},
+			},
+		},
+	}
+
+	wire, localAfter, localMutate, localAction, err := compileVFSHooks(cfg)
+	require.NoError(t, err)
+	require.NotNil(t, wire)
+	assert.True(t, wire.EmitEvents)
+	require.Len(t, localAfter, 1)
+	assert.True(t, localAfter[0].dangerous)
+	require.Len(t, localMutate, 0)
+	require.Len(t, localAction, 0)
+}
+
+func TestCompileVFSHooks_RejectsBeforeDangerousHook(t *testing.T) {
+	_, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
+		Rules: []VFSHookRule{
+			{
+				Name:  "before-dangerous",
+				Phase: VFSHookPhaseBefore,
+				DangerousHook: func(ctx context.Context, client *Client, event VFSHookEvent) error {
+					return nil
+				},
+			},
+		},
+	})
+	require.Error(t, err)
+	assert.ErrorContains(t, err, "phase=after")
 }
 
 func TestCompileVFSHooks_SplitsLocalActionHooks(t *testing.T) {
@@ -165,7 +204,7 @@ func TestCompileVFSHooks_SplitsLocalActionHooks(t *testing.T) {
 		},
 	}
 
-	wire, localAfter, localMutate, localAction, _, err := compileVFSHooks(cfg)
+	wire, localAfter, localMutate, localAction, err := compileVFSHooks(cfg)
 	require.NoError(t, err)
 	require.NotNil(t, wire)
 	require.Len(t, localAfter, 0)
@@ -176,7 +215,7 @@ func TestCompileVFSHooks_SplitsLocalActionHooks(t *testing.T) {
 }
 
 func TestCompileVFSHooks_RejectsAfterActionHook(t *testing.T) {
-	_, _, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
+	_, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
 		Rules: []VFSHookRule{
 			{
 				Name:  "bad-action",
@@ -205,7 +244,7 @@ func TestClientApplyLocalWriteMutations(t *testing.T) {
 				return []byte("mutated"), nil
 			},
 		},
-	}, nil, 1)
+	}, nil)
 
 	got, err := c.applyLocalWriteMutations(context.Background(), "/workspace/file.txt", []byte("abc"), 0640)
 	require.NoError(t, err)
@@ -226,7 +265,7 @@ func TestClientVFSHook_RecursionSuppressed(t *testing.T) {
 				return nil
 			},
 		},
-	}, nil, nil, 1)
+	}, nil, nil)
 
 	c.handleVFSFileEvent("write", "/workspace/trigger.txt", 0, 0, 0, 0)
 
@@ -236,6 +275,66 @@ func TestClientVFSHook_RecursionSuppressed(t *testing.T) {
 
 	time.Sleep(150 * time.Millisecond)
 	assert.Equal(t, int32(1), runs.Load())
+}
+
+func TestClientVFSHook_MultipleMatchingHooksRun(t *testing.T) {
+	c := &Client{}
+	var firstRuns atomic.Int32
+	var secondRuns atomic.Int32
+
+	c.setVFSHooks([]compiledVFSHook{
+		{
+			name: "first",
+			path: "/workspace/*",
+			callback: func(ctx context.Context, client *Client, event VFSHookEvent) error {
+				firstRuns.Add(1)
+				return nil
+			},
+		},
+		{
+			name: "second",
+			path: "/workspace/*",
+			callback: func(ctx context.Context, client *Client, event VFSHookEvent) error {
+				secondRuns.Add(1)
+				return nil
+			},
+		},
+	}, nil, nil)
+
+	c.handleVFSFileEvent("write", "/workspace/trigger.txt", 0, 0, 0, 0)
+
+	require.Eventually(t, func() bool {
+		return firstRuns.Load() == 1 && secondRuns.Load() == 1
+	}, 2*time.Second, 20*time.Millisecond)
+
+	assert.Equal(t, int32(1), firstRuns.Load())
+	assert.Equal(t, int32(1), secondRuns.Load())
+}
+
+func TestClientVFSDangerousHook_AllowsRecursion(t *testing.T) {
+	c := &Client{}
+	var runs atomic.Int32
+
+	c.setVFSHooks([]compiledVFSHook{
+		{
+			path:      "/workspace/*",
+			dangerous: true,
+			callback: func(ctx context.Context, client *Client, event VFSHookEvent) error {
+				cur := runs.Add(1)
+				// Stop after bounded recursion for test determinism.
+				if cur < 3 {
+					client.handleVFSFileEvent("write", "/workspace/nested.txt", 0, 0, 0, 0)
+				}
+				return nil
+			},
+		},
+	}, nil, nil)
+
+	c.handleVFSFileEvent("write", "/workspace/trigger.txt", 0, 0, 0, 0)
+
+	require.Eventually(t, func() bool {
+		return runs.Load() >= 3
+	}, 2*time.Second, 20*time.Millisecond)
 }
 
 func TestClientApplyLocalActionHooks_Block(t *testing.T) {
@@ -253,7 +352,7 @@ func TestClientApplyLocalActionHooks_Block(t *testing.T) {
 				return VFSHookActionBlock
 			},
 		},
-	}, 1)
+	})
 
 	err := c.applyLocalActionHooks(context.Background(), VFSHookOpWrite, "/workspace/file.txt", 3, 0640)
 	require.Error(t, err)

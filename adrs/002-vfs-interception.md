@@ -20,7 +20,7 @@ Current state:
 We want to support:
 
 1. allow/block operation policy
-2. before/after hooks (including triggering `exec`)
+2. before/after hooks (safe callbacks and explicit dangerous re-entrant callbacks)
 3. mutable write hooks (override write payload)
 
 ## Decision
@@ -69,7 +69,7 @@ Therefore:
   - policy hooks remain active
   - side-effect hooks are suppressed for VFS ops produced by hook-exec
 - Add safety limits:
-  - max hook depth (default `1`)
+  - non-reentrant side-effect suppression
   - hook timeout
   - cycle detection by hook identity chain
 
@@ -77,15 +77,14 @@ Suppression/limit events are emitted for observability.
 
 ### 4. API/SDK Surface
 
-Do not expose raw language callbacks in initial SDK API.
+Expose declarative wire rules (`allow` / `block`) plus SDK-local callbacks that are compiled client-side:
 
-Instead add declarative config under VFS config (JSON-RPC-safe), e.g.:
+- `hook(event)` for safe after callbacks (suppressed while hook side effects are active)
+- `dangerous_hook(client, event)` for explicit re-entrant callbacks
+- `mutate_hook(request)` for before-write content mutation
+- `action_hook(request)` for before-op allow/block decisions
 
-- operation + path matchers
-- action = allow | block | mutate_write | emit_event | exec_after
-- static mutation templates for initial write mutation support
-
-Rationale: subprocess SDK architecture cannot carry closures reliably, while declarative rules are portable across Go SDK, Python SDK, CLI config, and RPC.
+Rationale: subprocess SDK architecture still requires JSON-RPC-safe wire payloads, while local callbacks provide ergonomics for SDK users.
 
 ### 5. Eventing
 
@@ -148,9 +147,9 @@ Rejected for now. We need host authority for policy enforcement, eventing, and i
 
 ### Phase 2
 
-- Add async after-hooks with action executor.
-- Add `exec_after` action.
-- Add side-effect suppression + depth/timeout/cycle guards.
+- Add async after-hooks with suppression guard.
+- Add explicit dangerous re-entrant callbacks.
+- Add timeout/cycle safety controls.
 
 ### Phase 3
 

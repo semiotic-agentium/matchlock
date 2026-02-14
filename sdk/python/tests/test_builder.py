@@ -106,12 +106,7 @@ class TestSandboxNetwork:
         assert opts.allowed_hosts == ["a.com", "b.com"]
 
     def test_allow_host_cumulative(self):
-        opts = (
-            Sandbox("img")
-            .allow_host("a.com")
-            .allow_host("b.com", "c.com")
-            .options()
-        )
+        opts = Sandbox("img").allow_host("a.com").allow_host("b.com", "c.com").options()
         assert opts.allowed_hosts == ["a.com", "b.com", "c.com"]
 
     def test_block_private_ips(self):
@@ -211,7 +206,6 @@ class TestSandboxMounts:
 class TestSandboxVFSInterception:
     def test_with_vfs_interception(self):
         cfg = VFSInterceptionConfig(
-            max_exec_depth=1,
             rules=[
                 VFSHookRule(
                     phase="before",
@@ -223,7 +217,6 @@ class TestSandboxVFSInterception:
         )
         opts = Sandbox("img").with_vfs_interception(cfg).options()
         assert opts.vfs_interception is not None
-        assert opts.vfs_interception.max_exec_depth == 1
         assert len(opts.vfs_interception.rules) == 1
         assert opts.vfs_interception.rules[0].action == "block"
 

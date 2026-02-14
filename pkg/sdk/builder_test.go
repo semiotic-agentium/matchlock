@@ -170,7 +170,6 @@ func TestBuilderFullChain(t *testing.T) {
 
 func TestBuilderVFSInterception(t *testing.T) {
 	cfg := &VFSInterceptionConfig{
-		MaxExecDepth: 1,
 		Rules: []VFSHookRule{
 			{
 				Phase:  VFSHookPhaseBefore,
@@ -183,7 +182,6 @@ func TestBuilderVFSInterception(t *testing.T) {
 
 	opts := New("alpine:latest").WithVFSInterception(cfg).Options()
 	require.NotNil(t, opts.VFSInterception)
-	assert.Equal(t, 1, opts.VFSInterception.MaxExecDepth)
 	require.Len(t, opts.VFSInterception.Rules, 1)
 	assert.Equal(t, "block", opts.VFSInterception.Rules[0].Action)
 }
@@ -195,7 +193,7 @@ func TestBuilderVFSInterceptionCallback(t *testing.T) {
 				Phase: VFSHookPhaseAfter,
 				Ops:   []VFSHookOp{VFSHookOpWrite},
 				Path:  "/workspace/*",
-				Hook: func(ctx context.Context, client *Client, event VFSHookEvent) error {
+				Hook: func(ctx context.Context, event VFSHookEvent) error {
 					return nil
 				},
 			},

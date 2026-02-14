@@ -272,10 +272,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	var vfsRoot vfs.Provider = vfsRouter
 	vfsHooks := buildVFSHookEngine(config)
 	if vfsHooks != nil {
-		vfsHooks.SetExecFunc(func(ctx context.Context, command string) error {
-			_, err := execCommand(ctx, machine, config, caPool, policyEngine, command, nil)
-			return err
-		})
 		attachVFSFileEvents(vfsHooks, events)
 		vfsRoot = vfs.NewInterceptProvider(vfsRoot, vfsHooks)
 	}

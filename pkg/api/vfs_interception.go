@@ -2,10 +2,6 @@ package api
 
 // VFSInterceptionConfig configures host-side VFS interception rules.
 type VFSInterceptionConfig struct {
-	// MaxExecDepth limits nested hook-triggered exec actions.
-	// Values <= 0 default to 1.
-	MaxExecDepth int `json:"max_exec_depth,omitempty"`
-
 	// EmitEvents enables file-operation event notifications.
 	EmitEvents bool `json:"emit_events,omitempty"`
 
@@ -31,6 +27,7 @@ type VFSHookRule struct {
 	// Action is one of: allow, block.
 	Action string `json:"action"`
 
-	// TimeoutMS is currently reserved for future hook actions.
+	// TimeoutMS is interpreted by SDK-local callback execution and ignored by
+	// host wire rules.
 	TimeoutMS int `json:"timeout_ms,omitempty"`
 }

@@ -160,7 +160,22 @@ class TestVFSHookRule:
             phase=VFS_HOOK_PHASE_AFTER,
             ops=[VFS_HOOK_OP_WRITE],
             path="/workspace/*",
-            hook=lambda client, event: called.append((client, event)),
+            hook=lambda event: called.append(event),
+        )
+        assert r.to_dict() == {
+            "phase": "after",
+            "ops": ["write"],
+            "path": "/workspace/*",
+            "action": "allow",
+        }
+
+    def test_to_dict_ignores_dangerous_hook(self):
+        called = []
+        r = VFSHookRule(
+            phase=VFS_HOOK_PHASE_AFTER,
+            ops=[VFS_HOOK_OP_WRITE],
+            path="/workspace/*",
+            dangerous_hook=lambda client, event: called.append((client, event)),
         )
         assert r.to_dict() == {
             "phase": "after",
@@ -205,7 +220,6 @@ class TestVFSInterceptionConfig:
 
     def test_to_dict_with_values(self):
         c = VFSInterceptionConfig(
-            max_exec_depth=1,
             rules=[
                 VFSHookRule(
                     action="block",
@@ -215,7 +229,6 @@ class TestVFSInterceptionConfig:
             ],
         )
         assert c.to_dict() == {
-            "max_exec_depth": 1,
             "rules": [{"phase": "before", "ops": ["write"], "action": "block"}],
         }
 
@@ -240,7 +253,9 @@ class TestVFSHookConstants:
 
 class TestVFSMutateRequest:
     def test_fields(self):
-        req = VFSMutateRequest(path="/workspace/a.txt", size=123, mode=0o640, uid=1000, gid=1000)
+        req = VFSMutateRequest(
+            path="/workspace/a.txt", size=123, mode=0o640, uid=1000, gid=1000
+        )
         assert req.path == "/workspace/a.txt"
         assert req.size == 123
         assert req.mode == 0o640

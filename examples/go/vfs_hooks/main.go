@@ -44,7 +44,6 @@ func run() error {
 	defer client.Close(0)
 
 	sandbox := sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
-		MaxExecDepth: 1,
 		Rules: []sdk.VFSHookRule{
 			{
 				Name:  "block-create",
@@ -74,7 +73,7 @@ func run() error {
 				Ops:       []sdk.VFSHookOp{sdk.VFSHookOpWrite},
 				Path:      "/workspace/*",
 				TimeoutMS: 2000,
-				Hook: func(ctx context.Context, hookClient *sdk.Client, event sdk.VFSHookEvent) error {
+				DangerousHook: func(ctx context.Context, hookClient *sdk.Client, event sdk.VFSHookEvent) error {
 					line := fmt.Sprintf(
 						"op=%s path=%s size=%d mode=%#o uid=%d gid=%d",
 						event.Op, event.Path, event.Size, event.Mode, event.UID, event.GID,

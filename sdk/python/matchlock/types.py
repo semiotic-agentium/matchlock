@@ -102,8 +102,11 @@ class VFSHookRule:
     timeout_ms: int = 0
     """Timeout for SDK-local callback hooks in milliseconds."""
 
-    hook: Callable[[Any, "VFSHookEvent"], Any] | None = None
-    """SDK-local after-hook callback: hook(client, event) -> Any."""
+    hook: Callable[["VFSHookEvent"], Any] | None = None
+    """SDK-local safe after-hook callback: hook(event) -> Any."""
+
+    dangerous_hook: Callable[[Any, "VFSHookEvent"], Any] | None = None
+    """SDK-local re-entrant after-hook callback: dangerous_hook(client, event) -> Any."""
 
     mutate_hook: Callable[["VFSMutateRequest"], bytes | str | None] | None = None
     """SDK-local before-write mutate callback: mutate_hook(request) -> bytes|str|None."""
@@ -130,9 +133,6 @@ class VFSHookRule:
 class VFSInterceptionConfig:
     """Host-side VFS interception configuration."""
 
-    max_exec_depth: int = 0
-    """Maximum nested hook-triggered exec depth (0 = server default)."""
-
     emit_events: bool = False
     """Emit file-operation events from host-side VFS interception."""
 
@@ -141,8 +141,6 @@ class VFSInterceptionConfig:
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {}
-        if self.max_exec_depth > 0:
-            d["max_exec_depth"] = self.max_exec_depth
         if self.emit_events:
             d["emit_events"] = True
         if self.rules:

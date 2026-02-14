@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"syscall"
-	"time"
 )
 
 type HookOp string
@@ -45,7 +44,6 @@ const (
 	HookActionAllow       HookAction = "allow"
 	HookActionBlock       HookAction = "block"
 	HookActionMutateWrite HookAction = "mutate_write"
-	HookActionExecAfter   HookAction = "exec_after"
 )
 
 type HookRule struct {
@@ -58,9 +56,6 @@ type HookRule struct {
 
 	MutateWriteFunc MutateWriteFunc
 	MutateWrite     []byte
-
-	ExecCommand string
-	ExecTimeout time.Duration
 }
 
 type HookRequest struct {
@@ -88,8 +83,6 @@ type HookResult struct {
 	Bytes int
 	Meta  *HookFileMeta
 }
-
-type ExecFunc func(ctx context.Context, command string) error
 
 // MutateWriteFunc computes replacement bytes for a write operation.
 // Returning an error fails the intercepted write.
@@ -185,14 +178,10 @@ type hookTask struct {
 type HookEngine struct {
 	hooks []Hook
 
-	execMu sync.RWMutex
-	execFn ExecFunc
-
 	eventMu sync.RWMutex
 	eventFn func(req HookRequest, result HookResult)
 
-	maxExecDepth    int32
-	sideEffectDepth atomic.Int32
+	sideEffectActive atomic.Bool
 
 	queue   chan hookTask
 	closed  atomic.Bool
@@ -203,42 +192,28 @@ type HookEngine struct {
 
 // NewHookEngine constructs a hook engine from declarative rules.
 // Rules are compiled into callback hooks internally.
-func NewHookEngine(rules []HookRule, maxExecDepth int) *HookEngine {
-	h := newHookEngine(maxExecDepth)
-	h.hooks = compileHooksFromRules(rules, h.execFunc)
+func NewHookEngine(rules []HookRule) *HookEngine {
+	h := newHookEngine()
+	h.hooks = compileHooksFromRules(rules)
 	return h
 }
 
 // NewHookEngineWithCallbacks constructs a hook engine from callback hooks.
-func NewHookEngineWithCallbacks(hooks []Hook, maxExecDepth int) *HookEngine {
-	h := newHookEngine(maxExecDepth)
+func NewHookEngineWithCallbacks(hooks []Hook) *HookEngine {
+	h := newHookEngine()
 	h.hooks = normalizeHooks(hooks)
 	return h
 }
 
-func newHookEngine(maxExecDepth int) *HookEngine {
-	if maxExecDepth <= 0 {
-		maxExecDepth = 1
-	}
-
+func newHookEngine() *HookEngine {
 	h := &HookEngine{
-		maxExecDepth: int32(maxExecDepth),
-		queue:        make(chan hookTask, 128),
+		queue: make(chan hookTask, 128),
 	}
 
 	h.closeWg.Add(1)
 	go h.run()
 
 	return h
-}
-
-func (h *HookEngine) SetExecFunc(fn ExecFunc) {
-	if h == nil {
-		return
-	}
-	h.execMu.Lock()
-	h.execFn = fn
-	h.execMu.Unlock()
 }
 
 func (h *HookEngine) SetEventFunc(fn func(req HookRequest, result HookResult)) {
@@ -289,7 +264,7 @@ func (h *HookEngine) After(req HookRequest, result HookResult) {
 		if !hookMatches(hook, &req) {
 			continue
 		}
-		if hook.SideEffect && h.sideEffectDepth.Load() > 0 {
+		if hook.SideEffect && h.sideEffectActive.Load() {
 			continue
 		}
 
@@ -341,20 +316,13 @@ func (h *HookEngine) run() {
 
 func (h *HookEngine) runTask(task hookTask) {
 	if task.hook.SideEffect {
-		if h.sideEffectDepth.Load() >= h.maxExecDepth {
+		if !h.sideEffectActive.CompareAndSwap(false, true) {
 			return
 		}
-		h.sideEffectDepth.Add(1)
-		defer h.sideEffectDepth.Add(-1)
+		defer h.sideEffectActive.Store(false)
 	}
 
 	task.hook.After.After(context.Background(), task.req, task.result)
-}
-
-func (h *HookEngine) execFunc() ExecFunc {
-	h.execMu.RLock()
-	defer h.execMu.RUnlock()
-	return h.execFn
 }
 
 func (h *HookEngine) emitEvent(req HookRequest, result HookResult) {
@@ -367,7 +335,7 @@ func (h *HookEngine) emitEvent(req HookRequest, result HookResult) {
 	fn(req, result)
 }
 
-func compileHooksFromRules(rules []HookRule, getExec func() ExecFunc) []Hook {
+func compileHooksFromRules(rules []HookRule) []Hook {
 	normalized := make([]HookRule, 0, len(rules))
 	for _, rule := range rules {
 		rule.Phase = normalizeHookPhase(rule.Phase)
@@ -432,29 +400,6 @@ func compileHooksFromRules(rules []HookRule, getExec func() ExecFunc) []Hook {
 				}
 				return nil
 			})
-		case HookActionExecAfter:
-			if rule.ExecCommand == "" {
-				continue
-			}
-			command := rule.ExecCommand
-			timeout := rule.ExecTimeout
-			if timeout <= 0 {
-				timeout = 5 * time.Second
-			}
-			hook.After = AfterHookFunc(func(ctx context.Context, req HookRequest, result HookResult) {
-				if getExec == nil {
-					return
-				}
-				fn := getExec()
-				if fn == nil {
-					return
-				}
-				execCtx, cancel := context.WithTimeout(ctx, timeout)
-				defer cancel()
-				_ = fn(execCtx, command)
-			})
-			hook.Async = true
-			hook.SideEffect = true
 		case HookActionAllow:
 			// Explicit allow is currently a no-op.
 			continue
@@ -536,8 +481,6 @@ func normalizeHookAction(action HookAction) HookAction {
 		return HookActionBlock
 	case string(HookActionMutateWrite):
 		return HookActionMutateWrite
-	case string(HookActionExecAfter):
-		return HookActionExecAfter
 	default:
 		return HookActionAllow
 	}

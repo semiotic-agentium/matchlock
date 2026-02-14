@@ -64,19 +64,18 @@ func TestVFSInterceptionMutateWrite(t *testing.T) {
 	assert.Equal(t, []byte("mutated-by-hook"), got)
 }
 
-func TestVFSInterceptionExecAfterSuppressesRecursion(t *testing.T) {
+func TestVFSInterceptionDangerousHookAllowsReentry(t *testing.T) {
 	t.Parallel()
 
 	client := launchWithBuilder(t,
 		sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
-			MaxExecDepth: 1,
 			Rules: []sdk.VFSHookRule{
 				{
 					Phase:     sdk.VFSHookPhaseAfter,
 					Ops:       []sdk.VFSHookOp{sdk.VFSHookOpWrite},
 					Path:      "/workspace/*",
 					TimeoutMS: 2000,
-					Hook: func(ctx context.Context, hookClient *sdk.Client, _ sdk.VFSHookEvent) error {
+					DangerousHook: func(ctx context.Context, hookClient *sdk.Client, _ sdk.VFSHookEvent) error {
 						_, err := hookClient.Exec(ctx, "echo 1 >> /tmp/hook_runs; if [ ! -f /workspace/hook.log ]; then echo hook > /workspace/hook.log; fi")
 						return err
 					},
@@ -91,13 +90,14 @@ func TestVFSInterceptionExecAfterSuppressesRecursion(t *testing.T) {
 	err = client.WriteFile(context.Background(), "/workspace/trigger.txt", []byte("trigger"))
 	require.NoError(t, err, "WriteFile trigger")
 
-	runs := waitForHookRuns(t, client, 1, 5*time.Second)
-	assert.Equal(t, 1, runs, "hook exec should run once")
+	runs := waitForHookRuns(t, client, 2, 5*time.Second)
+	assert.GreaterOrEqual(t, runs, 2, "dangerous hook should re-enter at least once")
 
-	// Give queued tasks a brief chance to appear; with suppression this stays at 1.
+	// The command writes /workspace/hook.log only once, so re-entry should be bounded.
 	time.Sleep(300 * time.Millisecond)
 	finalRuns := currentHookRuns(t, client)
-	assert.Equal(t, 1, finalRuns, "side-effect recursion should be suppressed")
+	assert.GreaterOrEqual(t, finalRuns, 2, "dangerous hook re-entry should be visible")
+	assert.LessOrEqual(t, finalRuns, 4, "re-entry should stay bounded by command logic")
 
 	hookLog, err := client.ReadFile(context.Background(), "/workspace/hook.log")
 	require.NoError(t, err, "hook log should be created")
@@ -108,10 +108,10 @@ func TestVFSInterceptionAfterCallbackSuppressesRecursion(t *testing.T) {
 	t.Parallel()
 
 	var hookRuns atomic.Int32
+	var clientRef *sdk.Client
 
 	client := launchWithBuilder(t,
 		sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
-			MaxExecDepth: 1,
 			Rules: []sdk.VFSHookRule{
 				{
 					Name:      "callback-after-write",
@@ -119,15 +119,19 @@ func TestVFSInterceptionAfterCallbackSuppressesRecursion(t *testing.T) {
 					Ops:       []sdk.VFSHookOp{sdk.VFSHookOpWrite},
 					Path:      "/workspace/*",
 					TimeoutMS: 2000,
-					Hook: func(ctx context.Context, hookClient *sdk.Client, event sdk.VFSHookEvent) error {
+					Hook: func(ctx context.Context, _ sdk.VFSHookEvent) error {
 						hookRuns.Add(1)
-						_, err := hookClient.Exec(ctx, "echo callback > /workspace/callback.log")
+						if clientRef == nil {
+							return nil
+						}
+						_, err := clientRef.Exec(ctx, "echo callback > /workspace/callback.log")
 						return err
 					},
 				},
 			},
 		}),
 	)
+	clientRef = client
 
 	_, err := client.Exec(context.Background(), "rm -f /workspace/callback.log /workspace/trigger.txt")
 	require.NoError(t, err, "cleanup")

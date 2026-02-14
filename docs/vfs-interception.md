@@ -19,7 +19,6 @@ Use typed constants for phases and ops:
 
 ```go
 sandbox := sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConfig{
-	MaxExecDepth: 1,
 	Rules: []sdk.VFSHookRule{
 		{
 			Phase:  sdk.VFSHookPhaseBefore,
@@ -41,9 +40,17 @@ sandbox := sdk.New("alpine:latest").WithVFSInterception(&sdk.VFSInterceptionConf
 			Phase: sdk.VFSHookPhaseAfter,
 			Ops:   []sdk.VFSHookOp{sdk.VFSHookOpWrite},
 			Path:  "/workspace/*",
-			Hook: func(ctx context.Context, client *sdk.Client, event sdk.VFSHookEvent) error {
+			Hook: func(ctx context.Context, event sdk.VFSHookEvent) error {
 				fmt.Printf("op=%s path=%s size=%d mode=%#o uid=%d gid=%d\n",
 					event.Op, event.Path, event.Size, event.Mode, event.UID, event.GID)
+				return nil
+			},
+		},
+		{
+			Phase: sdk.VFSHookPhaseAfter,
+			Ops:   []sdk.VFSHookOp{sdk.VFSHookOpWrite},
+			Path:  "/workspace/*",
+			DangerousHook: func(ctx context.Context, client *sdk.Client, event sdk.VFSHookEvent) error {
 				_, err := client.Exec(ctx, "echo hook >> /workspace/hook.log")
 				return err
 			},
@@ -74,11 +81,13 @@ from matchlock import (
     VFS_HOOK_OP_WRITE,
 )
 
-def after_write(client, event):
+def after_write(event):
     print(
         f"op={event.op} path={event.path} size={event.size} "
         f"mode={oct(event.mode)} uid={event.uid} gid={event.gid}"
     )
+
+def dangerous_after_write(client, event):
     client.exec("echo hook >> /workspace/hook.log")
 
 def mutate_write(req: VFSMutateRequest) -> bytes:
@@ -89,7 +98,6 @@ def block_create(req: VFSActionRequest) -> str:
 
 sandbox = Sandbox("alpine:latest").with_vfs_interception(
     VFSInterceptionConfig(
-        max_exec_depth=1,
         rules=[
             VFSHookRule(
                 phase=VFS_HOOK_PHASE_BEFORE,
@@ -109,6 +117,12 @@ sandbox = Sandbox("alpine:latest").with_vfs_interception(
                 path="/workspace/*",
                 hook=after_write,
             ),
+            VFSHookRule(
+                phase=VFS_HOOK_PHASE_AFTER,
+                ops=[VFS_HOOK_OP_WRITE],
+                path="/workspace/*",
+                dangerous_hook=dangerous_after_write,
+            ),
         ],
     )
 )
@@ -120,8 +134,8 @@ See full runnable examples:
 
 ## Recursion and Safety
 
-- `max_exec_depth` limits nested hook-triggered side effects and prevents unbounded recursion.
-- SDK callback hooks are `after`-only.
+- `hook` callbacks are `after`-only and run with recursion suppression enabled.
+- `dangerous_hook` callbacks are `after`-only and bypass recursion suppression.
 - When SDK callbacks are present, event emission is enabled automatically for interception.
 
 ## Host-Side Dynamic Mutate (Go, In-Process)
@@ -140,7 +154,7 @@ hooks := vfs.NewHookEngine([]vfs.HookRule{
 			return []byte("prefix:" + req.Path), nil
 		},
 	},
-}, 1)
+})
 ```
 
 Notes:

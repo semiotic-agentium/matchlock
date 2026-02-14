@@ -39,10 +39,6 @@ func buildVFSHookEngine(config *api.Config) *vfs.HookEngine {
 			PathPattern: cfgRule.Path,
 			Action:      action,
 		}
-		if cfgRule.TimeoutMS > 0 {
-			rule.ExecTimeout = time.Duration(cfgRule.TimeoutMS) * time.Millisecond
-		}
-
 		rules = append(rules, rule)
 	}
 
@@ -50,7 +46,7 @@ func buildVFSHookEngine(config *api.Config) *vfs.HookEngine {
 		return nil
 	}
 
-	return vfs.NewHookEngine(rules, hookCfg.MaxExecDepth)
+	return vfs.NewHookEngine(rules)
 }
 
 func attachVFSFileEvents(hooks *vfs.HookEngine, events chan api.Event) {

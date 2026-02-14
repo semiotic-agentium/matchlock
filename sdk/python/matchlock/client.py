@@ -493,10 +493,6 @@ class Client:
                     raise MatchlockError(
                         f"invalid vfs hook {rule.name!r}: mutate_write requires mutate_hook callback"
                     )
-                if action == "exec_after":
-                    raise MatchlockError(
-                        f"invalid vfs hook {rule.name!r}: action=exec_after is unsupported; use hook or dangerous_hook callback"
-                    )
                 wire.rules.append(rule)
                 continue
 

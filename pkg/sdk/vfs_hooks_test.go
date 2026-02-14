@@ -127,8 +127,8 @@ func TestCompileVFSHooks_RejectsWireMutateWriteAction(t *testing.T) {
 	assert.ErrorContains(t, err, "requires MutateHook")
 }
 
-func TestCompileVFSHooks_RejectsWireExecAfterAction(t *testing.T) {
-	_, _, _, _, err := compileVFSHooks(&VFSInterceptionConfig{
+func TestCompileVFSHooks_PassesThroughWireExecAfterAction(t *testing.T) {
+	wire, localAfter, localMutate, localAction, err := compileVFSHooks(&VFSInterceptionConfig{
 		Rules: []VFSHookRule{
 			{
 				Name:   "wire-exec",
@@ -137,8 +137,13 @@ func TestCompileVFSHooks_RejectsWireExecAfterAction(t *testing.T) {
 			},
 		},
 	})
-	require.Error(t, err)
-	assert.ErrorContains(t, err, "unsupported")
+	require.NoError(t, err)
+	require.NotNil(t, wire)
+	require.Len(t, wire.Rules, 1)
+	assert.Equal(t, "exec_after", string(wire.Rules[0].Action))
+	require.Len(t, localAfter, 0)
+	require.Len(t, localMutate, 0)
+	require.Len(t, localAction, 0)
 }
 
 func TestCompileVFSHooks_SplitsLocalDangerousCallbacks(t *testing.T) {

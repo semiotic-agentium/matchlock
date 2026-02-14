@@ -512,8 +512,6 @@ func compileVFSHooks(cfg *VFSInterceptionConfig) (*VFSInterceptionConfig, []comp
 			switch action {
 			case "mutate_write":
 				return nil, nil, nil, nil, errx.With(ErrInvalidVFSHook, " %q mutate_write requires MutateHook callback", rule.Name)
-			case "exec_after":
-				return nil, nil, nil, nil, errx.With(ErrInvalidVFSHook, " %q action=exec_after is unsupported; use Hook or DangerousHook callback", rule.Name)
 			}
 			wire.Rules = append(wire.Rules, rule)
 			continue

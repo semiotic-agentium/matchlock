@@ -552,9 +552,24 @@ class TestClientCreate:
         finally:
             fake.close_stdout()
 
-    def test_create_rejects_wire_exec_after_action(self):
+    def test_create_passes_through_wire_exec_after_action(self):
         client, fake = make_client_with_fake()
         try:
+
+            def respond():
+                import time
+
+                time.sleep(0.05)
+                fake.push_response(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "result": {"id": "vm-wire-exec"},
+                    }
+                )
+
+            t = threading.Thread(target=respond, daemon=True)
+            t.start()
             opts = CreateOptions(
                 image="img",
                 vfs_interception=VFSInterceptionConfig(
@@ -567,8 +582,21 @@ class TestClientCreate:
                     ]
                 ),
             )
-            with pytest.raises(MatchlockError, match="unsupported"):
-                client.create(opts)
+            vm_id = client.create(opts)
+            assert vm_id == "vm-wire-exec"
+
+            req_line = fake.stdin.getvalue().splitlines()[0]
+            req = json.loads(req_line)
+            assert req["params"]["vfs"]["interception"] == {
+                "rules": [
+                    {
+                        "name": "wire-exec",
+                        "phase": "after",
+                        "action": "exec_after",
+                    }
+                ]
+            }
+            t.join(timeout=2)
         finally:
             fake.close_stdout()
 

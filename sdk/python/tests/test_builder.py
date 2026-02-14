@@ -1,7 +1,14 @@
 """Tests for matchlock.builder (Sandbox)."""
 
 from matchlock.builder import Sandbox
-from matchlock.types import CreateOptions, ImageConfig, MountConfig, Secret
+from matchlock.types import (
+    CreateOptions,
+    ImageConfig,
+    MountConfig,
+    Secret,
+    VFSHookRule,
+    VFSInterceptionConfig,
+)
 
 
 class TestSandboxInit:
@@ -62,6 +69,7 @@ class TestSandboxChaining:
         assert isinstance(s.with_disk_size(1), Sandbox)
         assert isinstance(s.with_timeout(1), Sandbox)
         assert isinstance(s.with_workspace("/x"), Sandbox)
+        assert isinstance(s.with_vfs_interception(VFSInterceptionConfig()), Sandbox)
         assert isinstance(s.with_env("K", "V"), Sandbox)
         assert isinstance(s.with_env_map({"K": "V"}), Sandbox)
         assert isinstance(s.allow_host("x.com"), Sandbox)
@@ -98,12 +106,7 @@ class TestSandboxNetwork:
         assert opts.allowed_hosts == ["a.com", "b.com"]
 
     def test_allow_host_cumulative(self):
-        opts = (
-            Sandbox("img")
-            .allow_host("a.com")
-            .allow_host("b.com", "c.com")
-            .options()
-        )
+        opts = Sandbox("img").allow_host("a.com").allow_host("b.com", "c.com").options()
         assert opts.allowed_hosts == ["a.com", "b.com", "c.com"]
 
     def test_block_private_ips(self):
@@ -198,6 +201,24 @@ class TestSandboxMounts:
         assert "/a" in opts.mounts
         assert "/b" in opts.mounts
         assert "/c" in opts.mounts
+
+
+class TestSandboxVFSInterception:
+    def test_with_vfs_interception(self):
+        cfg = VFSInterceptionConfig(
+            rules=[
+                VFSHookRule(
+                    phase="before",
+                    ops=["create"],
+                    path="/workspace/blocked.txt",
+                    action="block",
+                )
+            ],
+        )
+        opts = Sandbox("img").with_vfs_interception(cfg).options()
+        assert opts.vfs_interception is not None
+        assert len(opts.vfs_interception.rules) == 1
+        assert opts.vfs_interception.rules[0].action == "block"
 
 
 class TestSandboxImageConfig:

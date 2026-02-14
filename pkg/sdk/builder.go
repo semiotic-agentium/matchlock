@@ -59,6 +59,12 @@ func (b *SandboxBuilder) WithWorkspace(path string) *SandboxBuilder {
 	return b
 }
 
+// WithVFSInterception sets host-side VFS interception rules.
+func (b *SandboxBuilder) WithVFSInterception(cfg *VFSInterceptionConfig) *SandboxBuilder {
+	b.opts.VFSInterception = cfg
+	return b
+}
+
 // WithEnv sets a non-secret environment variable available to commands.
 func (b *SandboxBuilder) WithEnv(name, value string) *SandboxBuilder {
 	if b.opts.Env == nil {

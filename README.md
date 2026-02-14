@@ -135,7 +135,11 @@ with Client(Config()) as client:
     client.exec_stream(curl_cmd, stdout=sys.stdout, stderr=sys.stderr)
 ```
 
-See full examples in [`examples/go`](examples/go/main.go) and [`examples/python`](examples/python/main.py).
+See full examples in:
+- [`examples/go/basic/main.go`](examples/go/basic/main.go)
+- [`examples/go/vfs_hooks/main.go`](examples/go/vfs_hooks/main.go)
+- [`examples/python/basic/main.py`](examples/python/basic/main.py)
+- [`examples/python/vfs_hooks/main.py`](examples/python/vfs_hooks/main.py)
 
 ## Architecture
 
@@ -176,6 +180,7 @@ graph LR
 ## Docs
 
 - [Lifecycle and Cleanup Runbook](docs/lifecycle.md)
+- [VFS Interception](docs/vfs-interception.md)
 - [Developer Reference](AGENTS.md)
 
 ## License

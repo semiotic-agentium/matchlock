@@ -13,6 +13,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+const launchTimeout = 45 * time.Second
+
 func matchlockConfig(t *testing.T) sdk.Config {
 	t.Helper()
 	cfg := sdk.DefaultConfig()
@@ -37,8 +39,24 @@ func launchWithBuilder(t *testing.T, builder *sdk.SandboxBuilder) *sdk.Client {
 		client.Remove()
 	})
 
-	_, err = client.Launch(builder)
-	require.NoError(t, err, "Launch")
+	type launchResult struct {
+		id  string
+		err error
+	}
+	done := make(chan launchResult, 1)
+	go func() {
+		id, launchErr := client.Launch(builder)
+		done <- launchResult{id: id, err: launchErr}
+	}()
+
+	select {
+	case result := <-done:
+		require.NoError(t, result.err, "Launch")
+	case <-time.After(launchTimeout):
+		_ = client.Close(0)
+		_ = client.Remove()
+		require.FailNowf(t, "Launch timed out", "image=%s timeout=%s", builder.Options().Image, launchTimeout)
+	}
 
 	return client
 }

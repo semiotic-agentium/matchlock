@@ -1,7 +1,50 @@
 """Type definitions for the Matchlock SDK."""
 
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable, Literal, TypeAlias
+
+VFS_HOOK_PHASE_BEFORE = "before"
+VFS_HOOK_PHASE_AFTER = "after"
+VFS_HOOK_ACTION_ALLOW = "allow"
+VFS_HOOK_ACTION_BLOCK = "block"
+
+VFS_HOOK_OP_STAT = "stat"
+VFS_HOOK_OP_READDIR = "readdir"
+VFS_HOOK_OP_OPEN = "open"
+VFS_HOOK_OP_CREATE = "create"
+VFS_HOOK_OP_MKDIR = "mkdir"
+VFS_HOOK_OP_CHMOD = "chmod"
+VFS_HOOK_OP_REMOVE = "remove"
+VFS_HOOK_OP_REMOVE_ALL = "remove_all"
+VFS_HOOK_OP_RENAME = "rename"
+VFS_HOOK_OP_SYMLINK = "symlink"
+VFS_HOOK_OP_READLINK = "readlink"
+VFS_HOOK_OP_READ = "read"
+VFS_HOOK_OP_WRITE = "write"
+VFS_HOOK_OP_CLOSE = "close"
+VFS_HOOK_OP_SYNC = "sync"
+VFS_HOOK_OP_TRUNCATE = "truncate"
+
+VFSHookPhase: TypeAlias = Literal["", "before", "after"]
+VFSHookOp: TypeAlias = Literal[
+    "stat",
+    "readdir",
+    "open",
+    "create",
+    "mkdir",
+    "chmod",
+    "remove",
+    "remove_all",
+    "rename",
+    "symlink",
+    "readlink",
+    "read",
+    "write",
+    "close",
+    "sync",
+    "truncate",
+]
+VFSHookAction: TypeAlias = Literal["allow", "block"]
 
 
 @dataclass
@@ -35,6 +78,109 @@ class MountConfig:
         if self.readonly:
             d["readonly"] = self.readonly
         return d
+
+
+@dataclass
+class VFSHookRule:
+    """Single VFS interception rule."""
+
+    name: str = ""
+    """Optional rule name."""
+
+    phase: VFSHookPhase = ""
+    """Rule phase: before or after (empty defaults to before server-side)."""
+
+    ops: list[VFSHookOp] = field(default_factory=list)
+    """Operation filters: read, write, create, ... (empty = all)."""
+
+    path: str = ""
+    """filepath-style glob pattern (empty = all)."""
+
+    action: VFSHookAction = "allow"
+    """Wire action: allow or block."""
+
+    timeout_ms: int = 0
+    """Timeout for SDK-local callback hooks in milliseconds."""
+
+    hook: Callable[["VFSHookEvent"], Any] | None = None
+    """SDK-local safe after-hook callback: hook(event) -> Any."""
+
+    dangerous_hook: Callable[[Any, "VFSHookEvent"], Any] | None = None
+    """SDK-local re-entrant after-hook callback: dangerous_hook(client, event) -> Any."""
+
+    mutate_hook: Callable[["VFSMutateRequest"], bytes | str | None] | None = None
+    """SDK-local before-write mutate callback: mutate_hook(request) -> bytes|str|None."""
+
+    action_hook: Callable[["VFSActionRequest"], VFSHookAction] | None = None
+    """SDK-local before-op decision callback: action_hook(request) -> allow|block."""
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {"action": self.action}
+        if self.name:
+            d["name"] = self.name
+        if self.phase:
+            d["phase"] = self.phase
+        if self.ops:
+            d["ops"] = self.ops
+        if self.path:
+            d["path"] = self.path
+        if self.timeout_ms > 0:
+            d["timeout_ms"] = self.timeout_ms
+        return d
+
+
+@dataclass
+class VFSInterceptionConfig:
+    """Host-side VFS interception configuration."""
+
+    emit_events: bool = False
+    """Emit file-operation events from host-side VFS interception."""
+
+    rules: list[VFSHookRule] = field(default_factory=list)
+    """Interception rules."""
+
+    def to_dict(self) -> dict[str, Any]:
+        d: dict[str, Any] = {}
+        if self.emit_events:
+            d["emit_events"] = True
+        if self.rules:
+            d["rules"] = [r.to_dict() for r in self.rules]
+        return d
+
+
+@dataclass
+class VFSMutateRequest:
+    """Input to SDK-local mutate hooks."""
+
+    path: str
+    size: int
+    mode: int
+    uid: int
+    gid: int
+
+
+@dataclass
+class VFSActionRequest:
+    """Input to SDK-local action hooks."""
+
+    op: str
+    path: str
+    size: int
+    mode: int
+    uid: int
+    gid: int
+
+
+@dataclass
+class VFSHookEvent:
+    """Metadata delivered to SDK-local after hooks."""
+
+    op: str
+    path: str
+    size: int
+    mode: int
+    uid: int
+    gid: int
 
 
 @dataclass
@@ -120,6 +266,9 @@ class CreateOptions:
 
     env: dict[str, str] = field(default_factory=dict)
     """Non-secret environment variables available to commands."""
+
+    vfs_interception: VFSInterceptionConfig | None = None
+    """Host-side VFS interception rules."""
 
     secrets: list[Secret] = field(default_factory=list)
     """Secrets to inject (replaced in HTTP requests to allowed hosts)."""

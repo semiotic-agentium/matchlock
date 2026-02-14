@@ -29,7 +29,8 @@ type Sandbox struct {
 	machine     vm.Machine
 	netStack    *sandboxnet.NetworkStack
 	policy      *policy.Engine
-	vfsRoot     *vfs.MountRouter
+	vfsRoot     vfs.Provider
+	vfsHooks    *vfs.HookEngine
 	vfsServer   *vfs.VFSServer
 	vfsStopFunc func()
 	events      chan api.Event
@@ -245,7 +246,13 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 
 	vfsProviders := buildVFSProviders(config, workspace)
-	vfsRoot := vfs.NewMountRouter(vfsProviders)
+	vfsRouter := vfs.NewMountRouter(vfsProviders)
+	var vfsRoot vfs.Provider = vfsRouter
+	vfsHooks := buildVFSHookEngine(config)
+	if vfsHooks != nil {
+		attachVFSFileEvents(vfsHooks, events)
+		vfsRoot = vfs.NewInterceptProvider(vfsRoot, vfsHooks)
+	}
 
 	vfsServer := vfs.NewVFSServer(vfsRoot)
 
@@ -291,6 +298,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		netStack:    netStack,
 		policy:      policyEngine,
 		vfsRoot:     vfsRoot,
+		vfsHooks:    vfsHooks,
 		vfsServer:   vfsServer,
 		vfsStopFunc: vfsStopFunc,
 		events:      events,
@@ -419,6 +427,12 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		markCleanup("vfs_stop", nil)
 	} else {
 		markCleanup("vfs_stop", nil)
+	}
+	if s.vfsHooks != nil {
+		s.vfsHooks.Close()
+		markCleanup("vfs_hooks", nil)
+	} else {
+		markCleanup("vfs_hooks", nil)
 	}
 	if s.netStack != nil {
 		if err := s.netStack.Close(); err != nil {

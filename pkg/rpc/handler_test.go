@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/sandbox"
 )
 
 type mockVM struct {
@@ -38,6 +39,30 @@ func (m *mockVM) Exec(ctx context.Context, command string, opts *api.ExecOptions
 		return m.execFunc(ctx, command, opts)
 	}
 	return &api.ExecResult{Stdout: []byte("hello\n")}, nil
+}
+
+type mockPortForwardVM struct {
+	mockVM
+	called bool
+	ctx    context.Context
+}
+
+func (m *mockPortForwardVM) StartPortForwards(ctx context.Context, addresses []string, forwards []api.PortForward) (*sandbox.PortForwardManager, error) {
+	m.called = true
+	m.ctx = ctx
+	return &sandbox.PortForwardManager{}, nil
+}
+
+type blockingPortForwardVM struct {
+	mockVM
+	started chan struct{}
+	release chan struct{}
+}
+
+func (m *blockingPortForwardVM) StartPortForwards(ctx context.Context, addresses []string, forwards []api.PortForward) (*sandbox.PortForwardManager, error) {
+	m.started <- struct{}{}
+	<-m.release
+	return &sandbox.PortForwardManager{}, nil
 }
 
 // rpcMsg is a generic JSON-RPC message that can be either a response or notification
@@ -249,4 +274,109 @@ func TestHandlerCreateRejectsMountOutsideWorkspace(t *testing.T) {
 	require.Equal(t, ErrCodeInvalidParams, msg.Error.Code)
 	require.Contains(t, msg.Error.Message, "must be within workspace")
 	require.Equal(t, 0, factoryCalls, "factory should not have been called")
+}
+
+func TestHandlerPortForwardUnsupported(t *testing.T) {
+	vm := &mockVM{id: "vm-test"}
+	rpc := newTestRPC(vm)
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	rpc.read()
+
+	rpc.send("port_forward", 2, map[string]interface{}{
+		"forwards": []map[string]int{{"local_port": 8080, "remote_port": 8080}},
+	})
+	msg := rpc.read()
+	require.NotNil(t, msg.Error)
+	assert.Equal(t, ErrCodeVMFailed, msg.Error.Code)
+}
+
+func TestHandlerPortForwardSuccess(t *testing.T) {
+	vm := &mockPortForwardVM{
+		mockVM: mockVM{id: "vm-test"},
+	}
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return vm, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	rpc.read()
+
+	rpc.send("port_forward", 2, map[string]interface{}{
+		"forwards": []map[string]int{{"local_port": 8080, "remote_port": 8080}},
+		"addresses": []string{
+			"127.0.0.1",
+		},
+	})
+	msg := rpc.read()
+	require.Nil(t, msg.Error)
+	require.NotNil(t, msg.Result)
+	assert.True(t, vm.called)
+	require.NotNil(t, vm.ctx)
+	select {
+	case <-vm.ctx.Done():
+		t.Fatalf("port-forward context should remain active after request returns")
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestHandlerPortForwardSerializesReplacement(t *testing.T) {
+	vm := &blockingPortForwardVM{
+		mockVM:  mockVM{id: "vm-test"},
+		started: make(chan struct{}, 2),
+		release: make(chan struct{}, 2),
+	}
+
+	rpc := newTestRPCWithFactory(func(ctx context.Context, config *api.Config) (VM, error) {
+		return vm, nil
+	})
+	defer rpc.close()
+
+	rpc.send("create", 1, map[string]string{"image": "alpine:latest"})
+	msg := rpc.read()
+	require.Nil(t, msg.Error)
+
+	params := map[string]interface{}{
+		"forwards": []map[string]int{{"local_port": 8080, "remote_port": 8080}},
+	}
+
+	rpc.send("port_forward", 2, params)
+	select {
+	case <-vm.started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for first port_forward to start")
+	}
+
+	rpc.send("port_forward", 3, params)
+
+	secondStartedEarly := false
+	select {
+	case <-vm.started:
+		secondStartedEarly = true
+	case <-time.After(500 * time.Millisecond):
+	}
+
+	vm.release <- struct{}{}
+
+	if !secondStartedEarly {
+		select {
+		case <-vm.started:
+		case <-time.After(2 * time.Second):
+			t.Fatal("timed out waiting for second port_forward to start")
+		}
+	}
+
+	vm.release <- struct{}{}
+
+	msgA := rpc.read()
+	msgB := rpc.read()
+	require.NotNil(t, msgA.ID)
+	require.NotNil(t, msgB.ID)
+	require.Nil(t, msgA.Error)
+	require.Nil(t, msgB.Error)
+	assert.ElementsMatch(t, []uint64{2, 3}, []uint64{*msgA.ID, *msgB.ID})
+	assert.False(t, secondStartedEarly, "second port_forward started before first replacement completed")
 }

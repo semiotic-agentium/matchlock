@@ -62,6 +62,22 @@ func TestBuilderAddSecret(t *testing.T) {
 func TestBuilderBlockPrivateIPs(t *testing.T) {
 	opts := New("alpine:latest").BlockPrivateIPs().Options()
 	require.True(t, opts.BlockPrivateIPs)
+	require.True(t, opts.BlockPrivateIPsSet)
+}
+
+func TestBuilderAllowPrivateIPs(t *testing.T) {
+	opts := New("alpine:latest").AllowPrivateIPs().Options()
+	require.False(t, opts.BlockPrivateIPs)
+	require.True(t, opts.BlockPrivateIPsSet)
+}
+
+func TestBuilderUnsetBlockPrivateIPs(t *testing.T) {
+	opts := New("alpine:latest").
+		BlockPrivateIPs().
+		UnsetBlockPrivateIPs().
+		Options()
+	require.False(t, opts.BlockPrivateIPs)
+	require.False(t, opts.BlockPrivateIPsSet)
 }
 
 func TestBuilderWorkspace(t *testing.T) {
@@ -186,6 +202,7 @@ func TestBuilderFullChain(t *testing.T) {
 	require.Len(t, opts.Secrets, 1)
 	require.Equal(t, "abc123", opts.Env["PLAIN_TOKEN"])
 	require.True(t, opts.BlockPrivateIPs)
+	require.True(t, opts.BlockPrivateIPsSet)
 	require.Equal(t, "/code", opts.Workspace)
 	require.Len(t, opts.Mounts, 1)
 	require.Equal(t, 120, opts.TimeoutSeconds)

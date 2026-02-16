@@ -116,6 +116,14 @@ func TestBuilderDNSServersDefaultEmpty(t *testing.T) {
 	require.Empty(t, opts.DNSServers)
 }
 
+func TestBuilderNetworkMTU(t *testing.T) {
+	opts := New("alpine:latest").
+		WithNetworkMTU(1200).
+		Options()
+
+	require.Equal(t, 1200, opts.NetworkMTU)
+}
+
 func TestBuilderPortForwards(t *testing.T) {
 	opts := New("alpine:latest").
 		WithPortForward(18080, 8080).

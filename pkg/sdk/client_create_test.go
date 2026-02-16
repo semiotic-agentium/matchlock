@@ -99,3 +99,56 @@ func TestCreateReturnsVMIDWhenPostCreatePortForwardFails(t *testing.T) {
 	assert.Equal(t, ErrCodeVMFailed, rpcErr.Code)
 	assert.Contains(t, rpcErr.Message, "address already in use")
 }
+
+func TestCreateSendsNetworkMTU(t *testing.T) {
+	var capturedMTU float64
+
+	client, cleanup := newScriptedClient(t, func(req request) response {
+		switch req.Method {
+		case "create":
+			if req.Params != nil {
+				if params, ok := req.Params.(map[string]interface{}); ok {
+					if network, ok := params["network"].(map[string]interface{}); ok {
+						if mtu, ok := network["mtu"].(float64); ok {
+							capturedMTU = mtu
+						}
+					}
+				}
+			}
+			return response{
+				JSONRPC: "2.0",
+				Result:  json.RawMessage(`{"id":"vm-mtu"}`),
+				ID:      &req.ID,
+			}
+		default:
+			return response{
+				JSONRPC: "2.0",
+				Error: &rpcError{
+					Code:    ErrCodeMethodNotFound,
+					Message: "Method not found",
+				},
+				ID: &req.ID,
+			}
+		}
+	})
+	defer cleanup()
+
+	vmID, err := client.Create(CreateOptions{
+		Image:      "alpine:latest",
+		NetworkMTU: 1200,
+	})
+
+	require.NoError(t, err)
+	assert.Equal(t, "vm-mtu", vmID)
+	assert.Equal(t, 1200.0, capturedMTU)
+}
+
+func TestCreateRejectsNegativeNetworkMTU(t *testing.T) {
+	client := &Client{}
+	vmID, err := client.Create(CreateOptions{
+		Image:      "alpine:latest",
+		NetworkMTU: -1,
+	})
+	require.ErrorIs(t, err, ErrInvalidNetworkMTU)
+	assert.Empty(t, vmID)
+}

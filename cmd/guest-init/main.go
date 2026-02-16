@@ -12,8 +12,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	guestagent "github.com/jingkaihe/matchlock/internal/guestruntime/agent"
@@ -33,6 +36,7 @@ const (
 	defaultPATH      = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 
 	networkInterface  = "eth0"
+	defaultNetworkMTU = 1500
 	workspaceWaitStep = 100 * time.Millisecond
 	workspaceWaitMax  = 30 * time.Second
 )
@@ -45,6 +49,7 @@ type diskMount struct {
 type bootConfig struct {
 	DNSServers []string
 	Workspace  string
+	MTU        int
 	Disks      []diskMount
 }
 
@@ -86,7 +91,7 @@ func runInit() {
 		fatal(err)
 	}
 
-	bringUpNetwork(networkInterface)
+	bringUpNetwork(networkInterface, cfg.MTU)
 	mountExtraDisks(cfg.Disks)
 
 	if err := startGuestFused(guestFusedPath); err != nil {
@@ -117,7 +122,10 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 		return nil, errx.Wrap(ErrReadCmdline, err)
 	}
 
-	cfg := &bootConfig{Workspace: defaultWorkspace}
+	cfg := &bootConfig{
+		Workspace: defaultWorkspace,
+		MTU:       defaultNetworkMTU,
+	}
 	for _, field := range strings.Fields(string(data)) {
 		switch {
 		case strings.HasPrefix(field, "matchlock.dns="):
@@ -134,6 +142,14 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 			if v != "" {
 				cfg.Workspace = v
 			}
+
+		case strings.HasPrefix(field, "matchlock.mtu="):
+			v := strings.TrimPrefix(field, "matchlock.mtu=")
+			mtu, convErr := strconv.Atoi(v)
+			if convErr != nil || mtu <= 0 || mtu > 65535 {
+				return nil, errx.With(ErrInvalidMTU, ": %q", v)
+			}
+			cfg.MTU = mtu
 
 		case strings.HasPrefix(field, "matchlock.disk."):
 			spec := strings.TrimPrefix(field, "matchlock.disk.")
@@ -227,7 +243,14 @@ func writeResolvConf(path string, servers []string) error {
 	return nil
 }
 
-func bringUpNetwork(iface string) {
+func bringUpNetwork(iface string, mtu int) {
+	if mtu <= 0 {
+		mtu = defaultNetworkMTU
+	}
+	if err := setInterfaceMTU(iface, mtu); err != nil {
+		warnf("%v", err)
+	}
+
 	if err := setInterfaceUp(iface); err != nil {
 		warnf("%v", err)
 	}
@@ -259,6 +282,29 @@ func bringUpNetwork(iface string) {
 	if started {
 		time.Sleep(2 * time.Second)
 	}
+}
+
+func setInterfaceMTU(name string, mtu int) error {
+	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
+	if err != nil {
+		return errx.With(ErrSetInterfaceMTU, " socket: %w", err)
+	}
+	defer unix.Close(fd)
+
+	const ifNameLen = 16
+	var ifr struct {
+		name [ifNameLen]byte
+		mtu  int32
+		_    [20]byte
+	}
+	copy(ifr.name[:], name)
+	ifr.mtu = int32(mtu)
+
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(fd), syscall.SIOCSIFMTU, uintptr(unsafe.Pointer(&ifr)))
+	if errno != 0 {
+		return errx.With(ErrSetInterfaceMTU, " %s=%d: %v", name, mtu, errno)
+	}
+	return nil
 }
 
 func setInterfaceUp(name string) error {

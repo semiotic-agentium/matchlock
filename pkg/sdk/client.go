@@ -220,6 +220,8 @@ type CreateOptions struct {
 	VFSInterception *VFSInterceptionConfig
 	// DNSServers overrides the default DNS servers (8.8.8.8, 8.8.4.4)
 	DNSServers []string
+	// NetworkMTU overrides the guest interface/network stack MTU (default: 1500).
+	NetworkMTU int
 	// PortForwards maps local host ports to remote sandbox ports.
 	// These are applied after VM creation via the port_forward RPC.
 	PortForwards []api.PortForward
@@ -404,6 +406,9 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 	if opts.TimeoutSeconds == 0 {
 		opts.TimeoutSeconds = api.DefaultTimeoutSeconds
 	}
+	if opts.NetworkMTU < 0 {
+		return "", ErrInvalidNetworkMTU
+	}
 
 	wireVFS, localHooks, localMutateHooks, localActionHooks, err := compileVFSHooks(opts.VFSInterception)
 	if err != nil {
@@ -424,7 +429,7 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		params["privileged"] = true
 	}
 
-	if len(opts.AllowedHosts) > 0 || opts.BlockPrivateIPs || len(opts.Secrets) > 0 || len(opts.DNSServers) > 0 {
+	if len(opts.AllowedHosts) > 0 || opts.BlockPrivateIPs || len(opts.Secrets) > 0 || len(opts.DNSServers) > 0 || opts.NetworkMTU > 0 {
 		network := map[string]interface{}{
 			"allowed_hosts":     opts.AllowedHosts,
 			"block_private_ips": opts.BlockPrivateIPs,
@@ -441,6 +446,9 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		}
 		if len(opts.DNSServers) > 0 {
 			network["dns_servers"] = opts.DNSServers
+		}
+		if opts.NetworkMTU > 0 {
+			network["mtu"] = opts.NetworkMTU
 		}
 		params["network"] = network
 	}

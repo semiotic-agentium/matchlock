@@ -185,6 +185,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		Privileged: config.Privileged,
 		ExtraDisks: extraDisks,
 		DNSServers: config.Network.GetDNSServers(),
+		MTU:        config.Network.GetMTU(),
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)

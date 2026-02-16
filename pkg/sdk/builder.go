@@ -117,6 +117,12 @@ func (b *SandboxBuilder) WithDNSServers(servers ...string) *SandboxBuilder {
 	return b
 }
 
+// WithNetworkMTU overrides the guest interface/network stack MTU.
+func (b *SandboxBuilder) WithNetworkMTU(mtu int) *SandboxBuilder {
+	b.opts.NetworkMTU = mtu
+	return b
+}
+
 // WithPortForward adds a host-to-guest port mapping.
 func (b *SandboxBuilder) WithPortForward(localPort, remotePort int) *SandboxBuilder {
 	b.opts.PortForwards = append(b.opts.PortForwards, api.PortForward{

@@ -10,20 +10,13 @@ import (
 	"github.com/jingkaihe/matchlock/internal/errx"
 )
 
-// prepareRootfs injects matchlock components into an ext4 rootfs image using debugfs.
-// This includes the guest-agent binary, guest-fused binary, and guest-init binary.
+// prepareRootfs injects matchlock guest runtime components into an ext4 rootfs
+// image using debugfs. A single guest-init host binary is installed to multiple
+// in-guest entrypoints (/init, guest-agent, guest-fused) and dispatches by argv[0].
 // It also optionally resizes the rootfs if diskSizeMB > 0.
 func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
-	guestAgentPath := DefaultGuestAgentPath()
-	guestFusedPath := DefaultGuestFusedPath()
 	guestInitPath := DefaultGuestInitPath()
 
-	if _, err := os.Stat(guestAgentPath); err != nil {
-		return errx.With(ErrGuestAgent, " at %s: %w", guestAgentPath, err)
-	}
-	if _, err := os.Stat(guestFusedPath); err != nil {
-		return errx.With(ErrGuestFused, " at %s: %w", guestFusedPath, err)
-	}
 	if _, err := os.Stat(guestInitPath); err != nil {
 		return errx.With(ErrGuestInit, " at %s: %w", guestInitPath, err)
 	}
@@ -64,9 +57,9 @@ func prepareRootfs(rootfsPath string, diskSizeMB int64) error {
 	}
 
 	injections := []injection{
-		{guestAgentPath, "/opt/matchlock/guest-agent"},
-		{guestFusedPath, "/opt/matchlock/guest-fused"},
 		{guestInitPath, "/opt/matchlock/guest-init"},
+		{guestInitPath, "/opt/matchlock/guest-agent"},
+		{guestInitPath, "/opt/matchlock/guest-fused"},
 		// Write init binary to both real and usr-merged paths for cross-distro compat.
 		{guestInitPath, "/sbin/matchlock-init"},
 		{guestInitPath, "/usr/sbin/matchlock-init"},

@@ -104,7 +104,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
 	})
 
-	// Inject matchlock components (guest-agent, guest-fused, init, DNS) and resize
+	// Inject guest runtime components and resize rootfs
 	var diskSizeMB int64
 	if config.Resources != nil {
 		diskSizeMB = int64(config.Resources.DiskSizeMB)

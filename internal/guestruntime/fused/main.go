@@ -1,6 +1,6 @@
 // Guest FUSE daemon using go-fuse library
 // Connects to host VFS server over vsock and mounts at configurable workspace
-package main
+package guestfused
 
 import (
 	"context"
@@ -666,7 +666,7 @@ func getWorkspaceFromCmdline() string {
 	return "/workspace"
 }
 
-func main() {
+func Run() {
 	// Get workspace from kernel cmdline or use default
 	mountpoint := getWorkspaceFromCmdline()
 	if len(os.Args) > 1 {

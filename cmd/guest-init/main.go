@@ -1,8 +1,8 @@
 //go:build linux
 
-// guest-init is PID1 inside the guest VM. It performs minimal host-independent
-// bootstrapping (mounts, DNS, network link-up, VFS readiness) and then execs
-// the guest-agent.
+// guest-init is the unified guest runtime binary.
+// Invoked as /init it acts as PID1 and performs bootstrapping.
+// Invoked as guest-agent or guest-fused (via argv[0]) it runs that mode.
 package main
 
 import (
@@ -16,6 +16,8 @@ import (
 	"time"
 
 	"github.com/jingkaihe/matchlock/internal/errx"
+	guestagent "github.com/jingkaihe/matchlock/internal/guestruntime/agent"
+	guestfused "github.com/jingkaihe/matchlock/internal/guestruntime/fused"
 	"golang.org/x/sys/unix"
 )
 
@@ -47,6 +49,29 @@ type bootConfig struct {
 }
 
 func main() {
+	switch runtimeRole() {
+	case "guest-agent":
+		guestagent.Run()
+		return
+	case "guest-fused":
+		guestfused.Run()
+		return
+	default:
+		runInit()
+	}
+}
+
+func runtimeRole() string {
+	name := filepath.Base(os.Args[0])
+	switch name {
+	case "guest-agent", "guest-fused":
+		return name
+	default:
+		return "init"
+	}
+}
+
+func runInit() {
 	prepareBaseFilesystems()
 	cfg, err := parseBootConfig(procCmdlinePath)
 	if err != nil {

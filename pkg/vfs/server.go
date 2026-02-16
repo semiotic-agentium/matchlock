@@ -224,7 +224,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		}
 		info, err := provider.Stat(req.Path)
 		if err != nil {
-			return &VFSResponse{Err: errnoFromError(err)}
+			return &VFSResponse{}
 		}
 		return &VFSResponse{Stat: statFromInfo(info)}
 

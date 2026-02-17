@@ -27,6 +27,7 @@ import (
 const (
 	procCmdlinePath = "/proc/cmdline"
 	procMountsPath  = "/proc/mounts"
+	hostnamePath    = "/etc/hostname"
 	resolvConfPath  = "/etc/resolv.conf"
 
 	guestFusedPath = "/opt/matchlock/guest-fused"
@@ -49,6 +50,7 @@ type diskMount struct {
 
 type bootConfig struct {
 	DNSServers []string
+	Hostname   string
 	Workspace  string
 	MTU        int
 	Disks      []diskMount
@@ -86,7 +88,8 @@ func runInit() {
 
 	_ = os.Setenv("PATH", defaultPATH)
 	configureCgroupDelegation()
-	setHostname("matchlock")
+
+	configureHostname(cfg.Hostname)
 
 	if err := writeResolvConf(resolvConfPath, cfg.DNSServers); err != nil {
 		fatal(err)
@@ -136,6 +139,12 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 				if ns != "" {
 					cfg.DNSServers = append(cfg.DNSServers, ns)
 				}
+			}
+
+		case strings.HasPrefix(field, "hostname="):
+			v := strings.TrimPrefix(field, "hostname=")
+			if v != "" {
+				cfg.Hostname = v
 			}
 
 		case strings.HasPrefix(field, "matchlock.workspace="):
@@ -217,10 +226,24 @@ func configureCgroupDelegation() {
 	}
 }
 
-func setHostname(name string) {
-	if err := unix.Sethostname([]byte(name)); err != nil {
+/**
+ * configureHostname calls sethostname and writes /etc/hostname
+ *
+ * Hostname is actually set before user-space via `hostname=` kernel arg but
+ * we also set it here to write /etc/hostname for wider compatibility with tools
+ * that expect /etc/hostname to match kernel's hostname.
+ */
+func configureHostname(hostname string) error {
+	if hostname == "" {
+		hostname = "matchlock"
+	}
+	if err := unix.Sethostname([]byte(hostname)); err != nil {
 		warnf("set hostname failed: %v", err)
 	}
+	if err := os.WriteFile(hostnamePath, []byte(hostname+"\n"), 0644); err != nil {
+		return errx.With(ErrWriteHostname, " write %s: %w", hostnamePath, err)
+	}
+	return nil
 }
 
 func writeResolvConf(path string, servers []string) error {

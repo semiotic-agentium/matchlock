@@ -8,6 +8,7 @@ var (
 	ErrReadCmdline        = errors.New("read cmdline")
 	ErrMissingDNS         = errors.New("missing matchlock.dns")
 	ErrInvalidMTU         = errors.New("invalid matchlock.mtu")
+	ErrWriteHostname      = errors.New("write hostname")
 	ErrWriteResolvConf    = errors.New("write resolv.conf")
 	ErrBringUpInterface   = errors.New("bring up interface")
 	ErrSetInterfaceMTU    = errors.New("set interface mtu")

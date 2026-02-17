@@ -3,8 +3,11 @@ package api
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 // DefaultWorkspace is the default mount point for the VFS in the guest
@@ -28,6 +31,7 @@ type ImageConfig struct {
 }
 
 type Config struct {
+	ID         string            `json:"id,omitempty"`
 	Image      string            `json:"image,omitempty"`
 	Privileged bool              `json:"privileged,omitempty"`
 	Resources  *Resources        `json:"resources,omitempty"`
@@ -73,6 +77,7 @@ type NetworkConfig struct {
 	Secrets         map[string]Secret `json:"secrets,omitempty"`
 	PolicyScript    string            `json:"policy_script,omitempty"`
 	DNSServers      []string          `json:"dns_servers,omitempty"`
+	Hostname        string            `json:"hostname,omitempty"`
 	MTU             int               `json:"mtu,omitempty"`
 }
 
@@ -124,6 +129,25 @@ type MountConfig struct {
 	Readonly bool         `json:"readonly,omitempty"`
 	Upper    *MountConfig `json:"upper,omitempty"`
 	Lower    *MountConfig `json:"lower,omitempty"`
+}
+
+// GetID returns the VM ID from config. Creates a new random ID if not set.
+func (c *Config) GetID() string {
+	if c.ID == "" {
+		c.ID = "vm-" + uuid.New().String()[:8]
+	}
+	return c.ID
+}
+
+// GetHostname returns hostname from config, or MATCHLOCK_HOSTNAME, or default to ID if not set
+func (c *Config) GetHostname() string {
+	if c.Network.Hostname != "" {
+		return c.Network.Hostname
+	}
+	if hostname := os.Getenv("MATCHLOCK_HOSTNAME"); hostname != "" {
+		return hostname
+	}
+	return c.GetID()
 }
 
 // GetWorkspace returns the workspace path from config, or default if not set

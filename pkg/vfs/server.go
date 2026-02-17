@@ -336,10 +336,27 @@ func inodeFromFileInfo(path string, info interface {
 func inodeFromSys(sys any) uint64 {
 	switch st := sys.(type) {
 	case *syscall.Stat_t:
-		return uint64(st.Ino)
+		if st == nil || st.Ino == 0 {
+			return 0
+		}
+		return namespacedInode(uint64(st.Dev), uint64(st.Ino))
 	default:
 		return 0
 	}
+}
+
+func namespacedInode(dev, ino uint64) uint64 {
+	var pair [16]byte
+	binary.BigEndian.PutUint64(pair[0:8], dev)
+	binary.BigEndian.PutUint64(pair[8:16], ino)
+
+	h := fnv.New64a()
+	_, _ = h.Write(pair[:])
+	out := h.Sum64()
+	if out == 0 || out == 1 {
+		out += 2
+	}
+	return out
 }
 
 func syntheticInode(path string, isDir bool) uint64 {

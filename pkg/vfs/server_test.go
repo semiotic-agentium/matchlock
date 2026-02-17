@@ -80,7 +80,7 @@ func TestStatFromInfoSynthesizesStableNonZeroInode(t *testing.T) {
 }
 
 func TestDirentsFromEntriesPreferProviderInode(t *testing.T) {
-	st := &syscall.Stat_t{Ino: 4242}
+	st := &syscall.Stat_t{Dev: 7, Ino: 4242}
 	info := NewFileInfoWithSys("file.txt", 3, 0644, time.Unix(1700000000, 0), false, st)
 	entries := []DirEntry{
 		NewDirEntry("file.txt", false, 0644, info),
@@ -88,7 +88,18 @@ func TestDirentsFromEntriesPreferProviderInode(t *testing.T) {
 
 	dirents := direntsFromEntries("/workspace", entries)
 	require.Len(t, dirents, 1)
-	assert.Equal(t, uint64(4242), dirents[0].Ino)
+	assert.Equal(t, namespacedInode(uint64(st.Dev), uint64(st.Ino)), dirents[0].Ino)
+}
+
+func TestInodeFromSysNamespacesByDevice(t *testing.T) {
+	sameInoDevA := inodeFromSys(&syscall.Stat_t{Dev: 1, Ino: 2})
+	sameInoDevB := inodeFromSys(&syscall.Stat_t{Dev: 2, Ino: 2})
+	repeated := inodeFromSys(&syscall.Stat_t{Dev: 1, Ino: 2})
+
+	assert.NotZero(t, sameInoDevA)
+	assert.NotZero(t, sameInoDevB)
+	assert.NotEqual(t, sameInoDevA, sameInoDevB)
+	assert.Equal(t, sameInoDevA, repeated)
 }
 
 type denyStatProvider struct {

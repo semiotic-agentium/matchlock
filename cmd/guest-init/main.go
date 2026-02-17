@@ -229,13 +229,10 @@ func configureCgroupDelegation() {
 	}
 }
 
-/**
- * configureHostname calls sethostname and writes /etc/hostname
- *
- * Hostname is actually set before user-space via `hostname=` kernel arg but
- * we also set it here to write /etc/hostname for wider compatibility with tools
- * that expect /etc/hostname to match kernel's hostname.
- */
+// configureHostname calls sethostname and writes /etc/hostname.
+//
+// Hostname is set before user-space via the `hostname=` kernel arg, but we set
+// it here too to keep /etc/hostname in sync for tools that read the file.
 func configureHostname(hostname string) error {
 	if hostname == "" {
 		hostname = "matchlock"

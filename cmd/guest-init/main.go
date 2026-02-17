@@ -25,10 +25,11 @@ import (
 )
 
 const (
-	procCmdlinePath = "/proc/cmdline"
-	procMountsPath  = "/proc/mounts"
-	hostnamePath    = "/etc/hostname"
-	resolvConfPath  = "/etc/resolv.conf"
+	procCmdlinePath   = "/proc/cmdline"
+	procMountsPath    = "/proc/mounts"
+	etcHostnamePath   = "/etc/hostname"
+	etcHostsPath      = "/etc/hosts"
+	etcResolvConfPath = "/etc/resolv.conf"
 
 	guestFusedPath = "/opt/matchlock/guest-fused"
 	guestAgentPath = "/opt/matchlock/guest-agent"
@@ -91,7 +92,7 @@ func runInit() {
 
 	configureHostname(cfg.Hostname)
 
-	if err := writeResolvConf(resolvConfPath, cfg.DNSServers); err != nil {
+	if err := writeResolvConf(etcResolvConfPath, cfg.DNSServers); err != nil {
 		fatal(err)
 	}
 
@@ -240,10 +241,34 @@ func configureHostname(hostname string) error {
 	if err := unix.Sethostname([]byte(hostname)); err != nil {
 		warnf("set hostname failed: %v", err)
 	}
-	if err := os.WriteFile(hostnamePath, []byte(hostname+"\n"), 0644); err != nil {
-		return errx.With(ErrWriteHostname, " write %s: %w", hostnamePath, err)
+	if err := os.WriteFile(etcHostnamePath, []byte(hostname+"\n"), 0644); err != nil {
+		return errx.With(ErrWriteHostname, " write %s: %w", etcHostnamePath, err)
 	}
+	if err := patchEtcHostsWithHostname(etcHostsPath, hostname); err != nil {
+		return errx.With(ErrWriteHosts, " write %s: %w", etcHostnamePath, err)
+	}
+
 	return nil
+}
+
+func patchEtcHostsWithHostname(path string, hostname string) error {
+	content, err := os.ReadFile(path)
+	if err != nil || len(content) == 0 {
+		// the file cannot be read (does not exist) or is empty, let's start from a safe default then
+		content = []byte("127.0.0.1\tlocalhost localhost.localdomain\n::1\t\tlocalhost localhost.localdomain\n")
+	}
+
+	// inject guest hostname on localhost lines, we do this instead of writing file
+	// from scratch so that we do not overwrite potential custom /etc/hosts in OCI image
+	lines := strings.Split(string(content), "\n")
+	for i := range lines {
+		if strings.Contains(lines[i], "localhost") {
+			lines[i] = fmt.Sprintf("%s %s", lines[i], hostname)
+		}
+	}
+
+	patched := strings.Join(lines, "\n")
+	return os.WriteFile(path, []byte(patched), 0644)
 }
 
 func writeResolvConf(path string, servers []string) error {

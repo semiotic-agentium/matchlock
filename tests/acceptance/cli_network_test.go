@@ -79,6 +79,34 @@ func TestCLIHostnameOverrideHostname(t *testing.T) {
 	assert.Contains(t, stdout, "override.internal")
 }
 
+func TestCLIHostnameDefaultEtcHosts(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest",
+		"cat", "/etc/hosts",
+	)
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "localhost localhost.localdomain vm-")
+}
+
+func TestCLIHostnameOverrideEtcHosts(t *testing.T) {
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "alpine:latest", "--hostname", "override.internal",
+		"cat", "/etc/hosts",
+	)
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "localhost localhost.localdomain override.internal")
+}
+
+func TestCLIHostnameOverrideEtcHostsFromScratch(t *testing.T) {
+	// ubuntu:latest has an empty /etc/hosts file so we create localhost entries
+	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
+		"run", "--image", "ubuntu:latest", "--hostname", "override.internal",
+		"cat", "/etc/hosts",
+	)
+	require.Equal(t, 0, exitCode)
+	assert.Contains(t, stdout, "localhost localhost.localdomain override.internal")
+}
+
 func TestCLIAllowedHostHTTP(t *testing.T) {
 	stdout, _, exitCode := runCLIWithTimeout(t, 2*time.Minute,
 		"run", "--image", "alpine:latest",

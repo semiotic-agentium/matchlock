@@ -1,8 +1,10 @@
 package vfs
 
 import (
+	"os"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -62,6 +64,31 @@ func TestDispatchMkdirSucceedsWhenFollowUpStatDenied(t *testing.T) {
 		Mode: 0755,
 	})
 	require.Equal(t, -int32(syscall.EEXIST), retry.Err)
+}
+
+func TestStatFromInfoSynthesizesStableNonZeroInode(t *testing.T) {
+	info := NewFileInfo("repo", 0, os.ModeDir|0755, time.Unix(1700000000, 0), true)
+
+	first := statFromInfo("/workspace/repo", info)
+	second := statFromInfo("/workspace/repo", info)
+	other := statFromInfo("/workspace/other", info)
+
+	require.NotNil(t, first)
+	assert.NotZero(t, first.Ino)
+	assert.Equal(t, first.Ino, second.Ino)
+	assert.NotEqual(t, first.Ino, other.Ino)
+}
+
+func TestDirentsFromEntriesPreferProviderInode(t *testing.T) {
+	st := &syscall.Stat_t{Ino: 4242}
+	info := NewFileInfoWithSys("file.txt", 3, 0644, time.Unix(1700000000, 0), false, st)
+	entries := []DirEntry{
+		NewDirEntry("file.txt", false, 0644, info),
+	}
+
+	dirents := direntsFromEntries("/workspace", entries)
+	require.Len(t, dirents, 1)
+	assert.Equal(t, uint64(4242), dirents[0].Ino)
 }
 
 type denyStatProvider struct {

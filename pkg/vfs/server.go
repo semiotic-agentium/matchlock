@@ -2,9 +2,11 @@ package vfs
 
 import (
 	"encoding/binary"
+	"hash/fnv"
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -64,6 +66,7 @@ type VFSStat struct {
 	Mode    uint32 `cbor:"mode"`
 	ModTime int64  `cbor:"mtime"`
 	IsDir   bool   `cbor:"is_dir"`
+	Ino     uint64 `cbor:"ino,omitempty"`
 }
 
 type VFSDirEntry struct {
@@ -71,6 +74,7 @@ type VFSDirEntry struct {
 	IsDir bool   `cbor:"is_dir"`
 	Mode  uint32 `cbor:"mode"`
 	Size  int64  `cbor:"size"`
+	Ino   uint64 `cbor:"ino,omitempty"`
 }
 
 type VFSServer struct {
@@ -145,7 +149,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
-		return &VFSResponse{Stat: statFromInfo(info)}
+		return &VFSResponse{Stat: statFromInfo(req.Path, info)}
 
 	case OpSetattr:
 		if err := provider.Chmod(req.Path, os.FileMode(req.Mode)); err != nil {
@@ -155,7 +159,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
-		return &VFSResponse{Stat: statFromInfo(info)}
+		return &VFSResponse{Stat: statFromInfo(req.Path, info)}
 
 	case OpOpen:
 		h, err := provider.Open(req.Path, int(req.Flags), os.FileMode(req.Mode))
@@ -178,7 +182,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		}
 		fh := atomic.AddUint64(&s.nextFH, 1)
 		s.handles.Store(fh, h)
-		return &VFSResponse{Handle: fh, Stat: statFromInfo(info)}
+		return &VFSResponse{Handle: fh, Stat: statFromInfo(req.Path, info)}
 
 	case OpRead:
 		hi, ok := s.handles.Load(req.Handle)
@@ -216,7 +220,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		if err != nil {
 			return &VFSResponse{Err: errnoFromError(err)}
 		}
-		return &VFSResponse{Entries: direntsFromEntries(entries)}
+		return &VFSResponse{Entries: direntsFromEntries(req.Path, entries)}
 
 	case OpMkdir:
 		if err := provider.Mkdir(req.Path, os.FileMode(req.Mode)); err != nil {
@@ -226,7 +230,7 @@ func (s *VFSServer) dispatch(req *VFSRequest) *VFSResponse {
 		if err != nil {
 			return &VFSResponse{}
 		}
-		return &VFSResponse{Stat: statFromInfo(info)}
+		return &VFSResponse{Stat: statFromInfo(req.Path, info)}
 
 	case OpMkdirAll:
 		mp, ok := provider.(*MemoryProvider)
@@ -286,27 +290,76 @@ func errnoFromError(err error) int32 {
 	return -int32(syscall.EIO)
 }
 
-func statFromInfo(info FileInfo) *VFSStat {
+func statFromInfo(path string, info FileInfo) *VFSStat {
 	return &VFSStat{
 		Size:    info.Size(),
 		Mode:    uint32(info.Mode()),
 		ModTime: info.ModTime().Unix(),
 		IsDir:   info.IsDir(),
+		Ino:     inodeFromFileInfo(path, info, info.IsDir()),
 	}
 }
 
-func direntsFromEntries(entries []DirEntry) []VFSDirEntry {
+func direntsFromEntries(parentPath string, entries []DirEntry) []VFSDirEntry {
 	result := make([]VFSDirEntry, len(entries))
 	for i, e := range entries {
-		info, _ := e.Info()
+		childPath := filepath.Join(parentPath, e.Name())
+		info, infoErr := e.Info()
+		var size int64
+		ino := syntheticInode(childPath, e.IsDir())
+		if infoErr == nil {
+			size = info.Size()
+			ino = inodeFromFileInfo(childPath, info, e.IsDir())
+		}
 		result[i] = VFSDirEntry{
 			Name:  e.Name(),
 			IsDir: e.IsDir(),
 			Mode:  uint32(e.Type()),
-			Size:  info.Size(),
+			Size:  size,
+			Ino:   ino,
 		}
 	}
 	return result
+}
+
+func inodeFromFileInfo(path string, info interface {
+	Sys() any
+}, isDir bool) uint64 {
+	if info != nil {
+		if ino := inodeFromSys(info.Sys()); ino != 0 {
+			return ino
+		}
+	}
+	return syntheticInode(path, isDir)
+}
+
+func inodeFromSys(sys any) uint64 {
+	switch st := sys.(type) {
+	case *syscall.Stat_t:
+		return uint64(st.Ino)
+	default:
+		return 0
+	}
+}
+
+func syntheticInode(path string, isDir bool) uint64 {
+	clean := filepath.Clean(path)
+	if clean == "/" {
+		return 1
+	}
+
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(clean))
+	if isDir {
+		_, _ = h.Write([]byte{'d'})
+	} else {
+		_, _ = h.Write([]byte{'f'})
+	}
+	ino := h.Sum64()
+	if ino == 0 || ino == 1 {
+		ino += 2
+	}
+	return ino
 }
 
 // ServeUDS starts the VFS server on a Unix domain socket

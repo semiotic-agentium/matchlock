@@ -8,6 +8,7 @@
 * Fixed nested guest volume mount paths (for example `-v host:.host/example`) so intermediate directories are synthesized and mounts resolve correctly ([#42](https://github.com/jingkaihe/matchlock/issues/42)).
 * Added configurable guest network MTU (CLI `--mtu` and SDK `NetworkMTU`) to mitigate path-MTU/TLS handshake issues on some VM networking paths.
 * Refactored guest runtime startup to a unified `guest-init` binary that dispatches init/agent/fused roles, replacing separate guest binaries and simplifying rootfs injection.
+* Stabilised FUSE inode propagation for workspace paths to eliminate intermittent Alpine/musl `getcwd` failures during `git init` in `/workspace` ([#43](https://github.com/jingkaihe/matchlock/issues/43)).
 
 ## 0.1.19
 

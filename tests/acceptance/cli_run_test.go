@@ -115,13 +115,16 @@ func TestCLIRunInteractiveGitInitInWorkspaceKeepsPhysicalCWD(t *testing.T) {
 	commands := strings.Join([]string{
 		"apk add --no-cache git >/dev/null",
 		"cd workspace/",
+		"for i in 1 2 3 4 5 6 7 8; do",
 		"rm -rf repo",
 		"mkdir repo",
 		"cd repo",
 		"git init",
+		"echo GIT_INIT_EXIT:$?",
 		"pwd -P",
 		"echo PWD_PHYS_EXIT:$?",
-		"echo GIT_INIT_EXIT:$?",
+		"cd ..",
+		"done",
 		"exit",
 	}, "\n") + "\n"
 	_, err = ptmx.Write([]byte(commands))
@@ -137,9 +140,9 @@ func TestCLIRunInteractiveGitInitInWorkspaceKeepsPhysicalCWD(t *testing.T) {
 		out := output.String()
 		require.NoError(t, waitErr, "output:\n%s", out)
 		require.Contains(t, out, "Initialized empty Git repository", "output:\n%s", out)
+		require.Equal(t, 8, strings.Count(out, "GIT_INIT_EXIT:0"), "output:\n%s", out)
+		require.Equal(t, 8, strings.Count(out, "PWD_PHYS_EXIT:0"), "output:\n%s", out)
 		require.Contains(t, out, "/workspace/repo", "output:\n%s", out)
-		require.Contains(t, out, "PWD_PHYS_EXIT:0", "output:\n%s", out)
-		require.Contains(t, out, "GIT_INIT_EXIT:0", "output:\n%s", out)
 		require.NotContains(t, out, "unable to get current working directory", "output:\n%s", out)
 	case <-time.After(4 * time.Minute):
 		_ = cmd.Process.Kill()

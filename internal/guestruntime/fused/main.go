@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"fmt"
+	"hash/fnv"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -80,6 +81,7 @@ type VFSStat struct {
 	Mode    uint32 `cbor:"mode"`
 	ModTime int64  `cbor:"mtime"`
 	IsDir   bool   `cbor:"is_dir"`
+	Ino     uint64 `cbor:"ino,omitempty"`
 }
 
 type VFSDirEntry struct {
@@ -87,6 +89,7 @@ type VFSDirEntry struct {
 	IsDir bool   `cbor:"is_dir"`
 	Mode  uint32 `cbor:"mode"`
 	Size  int64  `cbor:"size"`
+	Ino   uint64 `cbor:"ino,omitempty"`
 }
 
 // VFSClient communicates with host VFS server over vsock
@@ -210,8 +213,13 @@ func (r *VFSRoot) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 	}
 
 	fillAttr(&out.Attr, resp.Stat)
+	if out.Attr.Ino == 0 {
+		isDir := resp.Stat != nil && resp.Stat.IsDir
+		out.Attr.Ino = inodeForPath(path, isDir)
+	}
+	out.Ino = out.Attr.Ino
 	node := &VFSNode{client: r.client, path: path, isDir: resp.Stat.IsDir}
-	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	stable := fs.StableAttr{Mode: out.Attr.Mode, Ino: out.Attr.Ino}
 	child := r.NewInode(ctx, node, stable)
 	return child, 0
 }
@@ -231,7 +239,11 @@ func (r *VFSRoot) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		if e.IsDir {
 			mode = syscall.S_IFDIR
 		}
-		entries[i] = fuse.DirEntry{Name: e.Name, Mode: mode}
+		ino := e.Ino
+		if ino == 0 {
+			ino = inodeForPath(filepath.Join(r.basePath, e.Name), e.IsDir)
+		}
+		entries[i] = fuse.DirEntry{Name: e.Name, Mode: mode, Ino: ino}
 	}
 	return fs.NewListDirStream(entries), 0
 }
@@ -246,9 +258,13 @@ func (r *VFSRoot) Mkdir(ctx context.Context, name string, mode uint32, out *fuse
 		return nil, syscall.Errno(-resp.Err)
 	}
 
-	fillEntryAttr(out, resp.Stat, syscall.S_IFDIR|mode, true)
+	fillEntryAttr(out, resp.Stat, entryAttrDefaults{
+		mode:  syscall.S_IFDIR | mode,
+		ino:   inodeForPath(path, true),
+		isDir: true,
+	})
 	node := &VFSNode{client: r.client, path: path, isDir: true}
-	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	stable := fs.StableAttr{Mode: out.Attr.Mode, Ino: out.Attr.Ino}
 	child := r.NewInode(ctx, node, stable)
 	return child, 0
 }
@@ -263,9 +279,13 @@ func (r *VFSRoot) Create(ctx context.Context, name string, flags uint32, mode ui
 		return nil, nil, 0, syscall.Errno(-resp.Err)
 	}
 
-	fillEntryAttr(out, resp.Stat, syscall.S_IFREG|mode, false)
+	fillEntryAttr(out, resp.Stat, entryAttrDefaults{
+		mode:  syscall.S_IFREG | mode,
+		ino:   inodeForPath(path, false),
+		isDir: false,
+	})
 	node := &VFSNode{client: r.client, path: path, isDir: false}
-	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	stable := fs.StableAttr{Mode: out.Attr.Mode, Ino: out.Attr.Ino}
 	child := r.NewInode(ctx, node, stable)
 	handle := &VFSFileHandle{client: r.client, handle: resp.Handle, path: path}
 	return child, handle, 0, 0
@@ -383,8 +403,13 @@ func (n *VFSNode) Lookup(ctx context.Context, name string, out *fuse.EntryOut) (
 	}
 
 	fillAttr(&out.Attr, resp.Stat)
+	if out.Attr.Ino == 0 {
+		isDir := resp.Stat != nil && resp.Stat.IsDir
+		out.Attr.Ino = inodeForPath(path, isDir)
+	}
+	out.Ino = out.Attr.Ino
 	node := &VFSNode{client: n.client, path: path, isDir: resp.Stat.IsDir}
-	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	stable := fs.StableAttr{Mode: out.Attr.Mode, Ino: out.Attr.Ino}
 	child := n.NewInode(ctx, node, stable)
 	return child, 0
 }
@@ -404,7 +429,11 @@ func (n *VFSNode) Readdir(ctx context.Context) (fs.DirStream, syscall.Errno) {
 		if e.IsDir {
 			mode = syscall.S_IFDIR
 		}
-		entries[i] = fuse.DirEntry{Name: e.Name, Mode: mode}
+		ino := e.Ino
+		if ino == 0 {
+			ino = inodeForPath(filepath.Join(n.path, e.Name), e.IsDir)
+		}
+		entries[i] = fuse.DirEntry{Name: e.Name, Mode: mode, Ino: ino}
 	}
 	return fs.NewListDirStream(entries), 0
 }
@@ -430,9 +459,13 @@ func (n *VFSNode) Mkdir(ctx context.Context, name string, mode uint32, out *fuse
 		return nil, syscall.Errno(-resp.Err)
 	}
 
-	fillEntryAttr(out, resp.Stat, syscall.S_IFDIR|mode, true)
+	fillEntryAttr(out, resp.Stat, entryAttrDefaults{
+		mode:  syscall.S_IFDIR | mode,
+		ino:   inodeForPath(path, true),
+		isDir: true,
+	})
 	node := &VFSNode{client: n.client, path: path, isDir: true}
-	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	stable := fs.StableAttr{Mode: out.Attr.Mode, Ino: out.Attr.Ino}
 	child := n.NewInode(ctx, node, stable)
 	return child, 0
 }
@@ -447,9 +480,13 @@ func (n *VFSNode) Create(ctx context.Context, name string, flags uint32, mode ui
 		return nil, nil, 0, syscall.Errno(-resp.Err)
 	}
 
-	fillEntryAttr(out, resp.Stat, syscall.S_IFREG|mode, false)
+	fillEntryAttr(out, resp.Stat, entryAttrDefaults{
+		mode:  syscall.S_IFREG | mode,
+		ino:   inodeForPath(path, false),
+		isDir: false,
+	})
 	node := &VFSNode{client: n.client, path: path, isDir: false}
-	stable := fs.StableAttr{Mode: out.Attr.Mode}
+	stable := fs.StableAttr{Mode: out.Attr.Mode, Ino: out.Attr.Ino}
 	child := n.NewInode(ctx, node, stable)
 	handle := &VFSFileHandle{client: n.client, handle: resp.Handle, path: path}
 	return child, handle, 0, 0
@@ -575,12 +612,16 @@ func (h *VFSFileHandle) Getattr(ctx context.Context, out *fuse.AttrOut) syscall.
 }
 
 func fillAttr(attr *fuse.Attr, stat *VFSStat) {
+	if stat == nil {
+		return
+	}
 	attr.Size = uint64(stat.Size)
 	attr.Mtime = uint64(stat.ModTime)
 	attr.Ctime = uint64(stat.ModTime)
 	attr.Atime = uint64(stat.ModTime)
 	attr.Blksize = 4096
 	attr.Blocks = (uint64(stat.Size) + 511) / 512
+	attr.Ino = stat.Ino
 	if stat.IsDir {
 		attr.Mode = syscall.S_IFDIR | (stat.Mode & 0777)
 		attr.Nlink = 2
@@ -590,18 +631,47 @@ func fillAttr(attr *fuse.Attr, stat *VFSStat) {
 	}
 }
 
-func fillEntryAttr(out *fuse.EntryOut, stat *VFSStat, fallbackMode uint32, isDir bool) {
+type entryAttrDefaults struct {
+	mode  uint32
+	ino   uint64
+	isDir bool
+}
+
+func fillEntryAttr(out *fuse.EntryOut, stat *VFSStat, defaults entryAttrDefaults) {
 	if stat != nil {
 		fillAttr(&out.Attr, stat)
+		out.Ino = out.Attr.Ino
 		return
 	}
-	out.Attr.Mode = fallbackMode
+	out.Attr.Mode = defaults.mode
 	out.Attr.Blksize = 4096
-	if isDir {
+	out.Attr.Ino = defaults.ino
+	out.Ino = defaults.ino
+	if defaults.isDir {
 		out.Attr.Nlink = 2
 	} else {
 		out.Attr.Nlink = 1
 	}
+}
+
+func inodeForPath(path string, isDir bool) uint64 {
+	clean := filepath.Clean(path)
+	if clean == "/" {
+		return 1
+	}
+
+	h := fnv.New64a()
+	_, _ = h.Write([]byte(clean))
+	if isDir {
+		_, _ = h.Write([]byte{'d'})
+	} else {
+		_, _ = h.Write([]byte{'f'})
+	}
+	ino := h.Sum64()
+	if ino == 0 || ino == 1 {
+		ino += 2
+	}
+	return ino
 }
 
 // Vsock helpers

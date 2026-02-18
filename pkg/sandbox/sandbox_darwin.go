@@ -190,6 +190,19 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		r.VsockPath = stateMgr.Dir(id) + "/vsock.sock"
 	})
 
+	// Prepare overlay snapshots before creating the VZ VM process.
+	// On macOS, large snapshot work between Create() and Start() can cause
+	// startup instability in Virtualization.framework.
+	overlaySnapshots, err := prepareOverlaySnapshots(config, stateMgr.Dir(id))
+	if err != nil {
+		if prebuiltRootfs != "" {
+			os.Remove(prebuiltRootfs)
+		}
+		subnetAlloc.Release(id)
+		stateMgr.Unregister(id)
+		return nil, err
+	}
+
 	machine, err := backend.Create(ctx, vmConfig)
 	if err != nil {
 		if prebuiltRootfs != "" {
@@ -215,14 +228,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 				}
 			}
 		}
-	}
-
-	overlaySnapshots, err := prepareOverlaySnapshots(config, stateMgr.Dir(id))
-	if err != nil {
-		machine.Close(ctx)
-		subnetAlloc.Release(id)
-		stateMgr.Unregister(id)
-		return nil, err
 	}
 
 	policyEngine := policy.NewEngine(config.Network)

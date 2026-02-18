@@ -58,7 +58,7 @@ func ParseVolumeMountSpec(vol string, workspace string) (VolumeMountSpec, error)
 		return VolumeMountSpec{}, errx.With(ErrHostPathNotExist, ": %s", hostPath)
 	}
 
-	// Default to overlay for safer copy-on-write behavior.
+	// Default to overlay for safer snapshot-based isolation.
 	mountType := MountTypeOverlay
 	readonly := false
 

@@ -33,7 +33,9 @@ From repo root, use the helper script in the codex example dir:
 ```bash
 ./examples/codex/matchlock-codex run
 ./examples/codex/matchlock-codex run "Fix failing tests in pkg/policy and add coverage"
+./examples/codex/matchlock-codex run --cpus 4 --memory 8192 jingkaihe/matchlock
 ```
+
 
 You can also pass an explicit GitHub repo slug:
 

@@ -20,7 +20,7 @@ extract_repo_slug() {
 }
 
 usage() {
-    echo "Usage: ./examples/codex/matchlock-codex run [owner/repo] [instruction]" >&2
+    echo "Usage: ./examples/codex/matchlock-codex run [--cpus N] [--memory MB] [owner/repo] [instruction]" >&2
     exit 1
 }
 
@@ -30,13 +30,9 @@ if [ -z "$PROJECT_ROOT" ]; then
     PROJECT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 fi
 
-MATCHLOCK_BIN="${MATCHLOCK_BIN:-$PROJECT_ROOT/bin/matchlock}"
-if [ ! -x "$MATCHLOCK_BIN" ]; then
-    MATCHLOCK_BIN="$(command -v matchlock || true)"
-fi
-
-if [ -z "$MATCHLOCK_BIN" ]; then
-    echo "matchlock binary not found. Build it with 'mise run build' or set MATCHLOCK_BIN." >&2
+MATCHLOCK_BIN="matchlock"
+if ! command -v "$MATCHLOCK_BIN" >/dev/null 2>&1; then
+    echo "matchlock binary not found in PATH." >&2
     exit 1
 fi
 
@@ -45,6 +41,29 @@ subcommand="$1"
 shift
 
 [ "$subcommand" = "run" ] || usage
+
+cpus="${MATCHLOCK_CODEX_CPUS:-2}"
+memory="${MATCHLOCK_CODEX_MEMORY:-4096}"
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --cpus)
+            [ "$#" -ge 2 ] || usage
+            cpus="$2"
+            shift 2
+            ;;
+        --memory)
+            [ "$#" -ge 2 ] || usage
+            memory="$2"
+            shift 2
+            ;;
+        --help|-h)
+            usage
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 repo=""
 if [ "$#" -gt 0 ] && is_repo_slug "$1"; then
@@ -92,8 +111,8 @@ git_editor="${GIT_EDITOR:-$(git -C "$PWD" config --get core.editor 2>/dev/null |
 args=(
     run
     --image codex:latest
-    --cpus 2
-    --memory 4096
+    --cpus "$cpus"
+    --memory "$memory"
     -it
     --allow-host github.com
     --allow-host "*.github.com"

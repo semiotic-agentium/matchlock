@@ -6,7 +6,7 @@
     "start": "tsx main.ts"
   },
   "dependencies": {
-    "matchlock-sdk": "file:../../../sdk/typescript"
+    "matchlock-sdk": "^0.1.22"
   },
   "devDependencies": {
     "tsx": "^4.19.3"

@@ -4,11 +4,7 @@ Run from the repository root:
 
 ```bash
 export ANTHROPIC_API_KEY=sk-ant-...
-cd sdk/typescript
-npm install
-npm run build
-
-cd ../../examples/typescript/basic
+cd examples/typescript/basic
 npm install
 npm run start
 ```

@@ -161,9 +161,7 @@ with Client(Config()) as client:
 **TypeScript**
 
 ```bash
-cd sdk/typescript
-npm install
-npm run build
+npm install matchlock-sdk
 ```
 
 ```ts

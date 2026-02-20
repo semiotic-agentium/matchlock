@@ -7,12 +7,10 @@ TypeScript client for [Matchlock](https://github.com/jingkaihe/matchlock), with 
 - Node.js 22+
 - `matchlock` CLI installed and available on `PATH` (or configured with `binaryPath`)
 
-## Install (from source)
+## Install
 
 ```bash
-cd sdk/typescript
-npm install
-npm run build
+npm install matchlock-sdk
 ```
 
 ## Quick Start

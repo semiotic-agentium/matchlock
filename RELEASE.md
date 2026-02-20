@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.1.22
+
+* Fixed TypeScript SDK npm provenance metadata by setting `repository.url`/`repository.directory` in `sdk/typescript/package.json`.
+
 ## 0.1.21
 
 * Added a TypeScript SDK with Go/Python feature parity, tests, release/test GitHub Actions, and examples.

@@ -302,6 +302,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			CAPool:     caPool,
 			DNSServers: config.Network.GetDNSServers(),
 			Logger:     nil,
+			VMID:       id,
+			EventStore: stateMgr,
 		})
 		if err != nil {
 			machine.Close(ctx)

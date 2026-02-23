@@ -13,4 +13,8 @@ var (
 
 	ErrNoAvailableSubnets   = errors.New("no available subnets")
 	ErrSaveSubnetAllocation = errors.New("failed to save subnet allocation")
+
+	ErrInsertEvent = errors.New("insert event")
+	ErrQueryEvents = errors.New("query events")
+	ErrPruneEvents = errors.New("prune events")
 )

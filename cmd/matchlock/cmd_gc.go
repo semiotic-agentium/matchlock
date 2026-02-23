@@ -9,6 +9,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/jingkaihe/matchlock/pkg/lifecycle"
+	"github.com/jingkaihe/matchlock/pkg/state"
 )
 
 var gcCmd = &cobra.Command{
@@ -21,11 +22,13 @@ var gcCmd = &cobra.Command{
 
 func init() {
 	gcCmd.Flags().Bool("force-running", false, "Also reconcile VMs that are currently running")
+	gcCmd.Flags().Int("prune-events-days", 0, "Delete events older than N days (0 = skip)")
 	rootCmd.AddCommand(gcCmd)
 }
 
 func runGC(cmd *cobra.Command, args []string) error {
 	forceRunning, _ := cmd.Flags().GetBool("force-running")
+	pruneEventsDays, _ := cmd.Flags().GetInt("prune-events-days")
 	reconciler := lifecycle.NewReconciler()
 
 	if len(args) == 1 {
@@ -42,6 +45,17 @@ func runGC(cmd *cobra.Command, args []string) error {
 		return err
 	}
 	fmt.Printf("Reconciled %d VMs\n", len(reports))
+
+	if pruneEventsDays > 0 {
+		mgr := state.NewManager()
+		deleted, err := mgr.PruneEvents(pruneEventsDays)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to prune events: %v\n", err)
+		} else if deleted > 0 {
+			fmt.Printf("Pruned %d events older than %d days\n", deleted, pruneEventsDays)
+		}
+	}
+
 	return nil
 }
 

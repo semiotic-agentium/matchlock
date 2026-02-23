@@ -56,5 +56,31 @@ CREATE TABLE IF NOT EXISTS subnet_allocations (
 CREATE INDEX IF NOT EXISTS idx_subnet_allocations_octet ON subnet_allocations(octet);
 `,
 		},
+		{
+			Version: 3,
+			Name:    "create_events",
+			SQL: `
+CREATE TABLE IF NOT EXISTS events (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  vm_id            TEXT    NOT NULL,
+  type             TEXT    NOT NULL,
+  timestamp        INTEGER NOT NULL,
+  net_method       TEXT,
+  net_host         TEXT,
+  net_path         TEXT,
+  net_status_code  INTEGER,
+  net_request_bytes  INTEGER,
+  net_response_bytes INTEGER,
+  net_duration_ms  INTEGER,
+  net_blocked      INTEGER DEFAULT 0,
+  net_block_reason TEXT,
+  policy_action    TEXT,
+  policy_plugin    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_events_vm_id ON events(vm_id);
+CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_events_net_host ON events(net_host);
+`,
+		},
 	}
 }

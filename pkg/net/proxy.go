@@ -49,6 +49,8 @@ type ProxyConfig struct {
 	Events          chan api.Event
 	CAPool          *CAPool
 	Logger          *slog.Logger
+	VMID            string
+	EventStore      EventPersister
 }
 
 func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
@@ -88,7 +90,7 @@ func NewTransparentProxy(cfg *ProxyConfig) (*TransparentProxy, error) {
 		httpListener:        httpLn,
 		httpsListener:       httpsLn,
 		passthroughListener: passthroughLn,
-		interceptor:         NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, cfg.Logger),
+		interceptor:         NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, cfg.Logger, cfg.VMID, cfg.EventStore),
 		policy:              cfg.Policy,
 		events:              cfg.Events,
 		httpPort:            actualHTTPPort,

@@ -313,6 +313,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 			Events:          events,
 			CAPool:          caPool,
 			Logger:          nil,
+			VMID:            id,
+			EventStore:      stateMgr,
 		})
 		if err != nil {
 			machine.Close(ctx)

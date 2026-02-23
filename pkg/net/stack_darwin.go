@@ -63,6 +63,8 @@ type Config struct {
 	CAPool     *CAPool
 	DNSServers []string
 	Logger     *slog.Logger
+	VMID       string
+	EventStore EventPersister
 }
 
 // writeBufPool provides reusable buffers for serializing outbound packets
@@ -315,7 +317,7 @@ func NewNetworkStack(cfg *Config) (*NetworkStack, error) {
 		dnsServers: cfg.DNSServers,
 	}
 
-	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, cfg.Logger)
+	ns.interceptor = NewHTTPInterceptor(cfg.Policy, cfg.Events, cfg.CAPool, cfg.Logger, cfg.VMID, cfg.EventStore)
 
 	tcpForwarder := tcp.NewForwarder(s, tcpReceiveWindowSize, 65535, ns.handleTCPConnection)
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpForwarder.HandlePacket)

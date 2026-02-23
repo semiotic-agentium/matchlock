@@ -15,24 +15,33 @@ import (
 	"github.com/jingkaihe/matchlock/pkg/policy"
 )
 
-type HTTPInterceptor struct {
-	policy   *policy.Engine
-	events   chan api.Event
-	caPool   *CAPool
-	connPool *upstreamConnPool
-	logger   *slog.Logger
+// EventPersister persists intercepted network events to durable storage.
+type EventPersister interface {
+	InsertEvent(vmID string, e api.Event, action, plugin string) error
 }
 
-func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPool, logger *slog.Logger) *HTTPInterceptor {
+type HTTPInterceptor struct {
+	policy     *policy.Engine
+	events     chan api.Event
+	caPool     *CAPool
+	connPool   *upstreamConnPool
+	logger     *slog.Logger
+	vmID       string
+	eventStore EventPersister
+}
+
+func NewHTTPInterceptor(pol *policy.Engine, events chan api.Event, caPool *CAPool, logger *slog.Logger, vmID string, eventStore EventPersister) *HTTPInterceptor {
 	if logger == nil {
 		logger = slog.Default()
 	}
 	return &HTTPInterceptor{
-		policy:   pol,
-		events:   events,
-		caPool:   caPool,
-		connPool: newUpstreamConnPool(),
-		logger:   logger.With("component", "net"),
+		policy:     pol,
+		events:     events,
+		caPool:     caPool,
+		connPool:   newUpstreamConnPool(),
+		logger:     logger.With("component", "net"),
+		vmID:       vmID,
+		eventStore: eventStore,
 	}
 }
 
@@ -55,14 +64,14 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		}
 
 		if !i.policy.IsHostAllowed(host) {
-			i.emitBlockedEvent(req, host, "host not in allowlist")
+			i.emitBlockedEvent(req, host, "host not in allowlist", "block", "host_filter")
 			writeHTTPError(guestConn, http.StatusForbidden, "Blocked by policy")
 			return
 		}
 
 		modifiedReq, err := i.policy.OnRequest(req, host)
 		if err != nil {
-			i.emitBlockedEvent(req, host, err.Error())
+			i.emitBlockedEvent(req, host, err.Error(), "block", "")
 			writeHTTPError(guestConn, http.StatusForbidden, "Blocked by policy")
 			return
 		}
@@ -118,7 +127,7 @@ func (i *HTTPInterceptor) HandleHTTP(guestConn net.Conn, dstIP string, dstPort i
 		modifiedResp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
 		duration := time.Since(start)
-		i.emitEvent(modifiedReq, modifiedResp, host, duration)
+		i.emitEvent(modifiedReq, modifiedResp, host, duration, "allow", "")
 
 		if err := writeResponse(guestConn, modifiedResp); err != nil {
 			pc.conn.Close()
@@ -159,7 +168,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 	}
 
 	if !i.policy.IsHostAllowed(serverName) {
-		i.emitBlockedEvent(nil, serverName, "host not in allowlist")
+		i.emitBlockedEvent(nil, serverName, "host not in allowlist", "block", "host_filter")
 		return
 	}
 
@@ -176,7 +185,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		// Routing decision
 		routeDirective, err := i.policy.RouteRequest(req, serverName)
 		if err != nil {
-			i.emitBlockedEvent(req, serverName, err.Error())
+			i.emitBlockedEvent(req, serverName, err.Error(), "block", "local_model_router")
 			writeHTTPError(tlsConn, http.StatusBadGateway, "Routing error")
 			return
 		}
@@ -190,7 +199,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		// Secret injection using effective host
 		modifiedReq, err := i.policy.OnRequest(req, effectiveHost)
 		if err != nil {
-			i.emitBlockedEvent(req, serverName, err.Error())
+			i.emitBlockedEvent(req, serverName, err.Error(), "block", "")
 			writeHTTPError(tlsConn, http.StatusForbidden, "Blocked by policy")
 			return
 		}
@@ -263,7 +272,11 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 		modifiedResp.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
 
 		duration := time.Since(start)
+		eventAction := "allow"
+		eventPlugin := ""
 		if routeDirective != nil {
+			eventAction = "redirect"
+			eventPlugin = "local_model_router"
 			i.logger.Info(
 				fmt.Sprintf("local model redirect complete: %s %s%s -> %d %s:%d (%dms, %d bytes)",
 					req.Method, serverName, req.URL.Path,
@@ -280,7 +293,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 				"bytes", len(body),
 			)
 		}
-		i.emitEvent(modifiedReq, modifiedResp, serverName, duration)
+		i.emitEvent(modifiedReq, modifiedResp, serverName, duration, eventAction, eventPlugin)
 
 		if err := writeResponse(tlsConn, modifiedResp); err != nil {
 			return
@@ -292,11 +305,7 @@ func (i *HTTPInterceptor) HandleHTTPS(guestConn net.Conn, dstIP string, dstPort 
 	}
 }
 
-func (i *HTTPInterceptor) emitEvent(req *http.Request, resp *http.Response, host string, duration time.Duration) {
-	if i.events == nil {
-		return
-	}
-
+func (i *HTTPInterceptor) emitEvent(req *http.Request, resp *http.Response, host string, duration time.Duration, action, plugin string) {
 	var reqBytes, respBytes int64
 	if req.ContentLength > 0 {
 		reqBytes = req.ContentLength
@@ -310,8 +319,7 @@ func (i *HTTPInterceptor) emitEvent(req *http.Request, resp *http.Response, host
 		scheme = "https"
 	}
 
-	select {
-	case i.events <- api.Event{
+	event := api.Event{
 		Type:      "network",
 		Timestamp: time.Now().Unix(),
 		Network: &api.NetworkEvent{
@@ -324,16 +332,21 @@ func (i *HTTPInterceptor) emitEvent(req *http.Request, resp *http.Response, host
 			DurationMS:    duration.Milliseconds(),
 			Blocked:       false,
 		},
-	}:
-	default:
+	}
+
+	if i.events != nil {
+		select {
+		case i.events <- event:
+		default:
+		}
+	}
+
+	if i.eventStore != nil {
+		_ = i.eventStore.InsertEvent(i.vmID, event, action, plugin)
 	}
 }
 
-func (i *HTTPInterceptor) emitBlockedEvent(req *http.Request, host, reason string) {
-	if i.events == nil {
-		return
-	}
-
+func (i *HTTPInterceptor) emitBlockedEvent(req *http.Request, host, reason, action, plugin string) {
 	event := api.Event{
 		Type:      "network",
 		Timestamp: time.Now().Unix(),
@@ -349,9 +362,15 @@ func (i *HTTPInterceptor) emitBlockedEvent(req *http.Request, host, reason strin
 		event.Network.URL = req.URL.String()
 	}
 
-	select {
-	case i.events <- event:
-	default:
+	if i.events != nil {
+		select {
+		case i.events <- event:
+		default:
+		}
+	}
+
+	if i.eventStore != nil {
+		_ = i.eventStore.InsertEvent(i.vmID, event, action, plugin)
 	}
 }
 

@@ -23,6 +23,8 @@ ARG KERNEL_VERSION
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential bc flex bison libelf-dev libssl-dev wget ca-certificates \
         gcc-aarch64-linux-gnu \
+        dwarves \
+        python3 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN wget -qO /tmp/linux.tar.xz \
@@ -40,7 +42,12 @@ COPY x86_64.config /tmp/linux-src/.config
 
 RUN cd /tmp/linux-src \
     && make olddefconfig \
-    && make -j"$(nproc)" vmlinux
+    && echo "=== BTF config after olddefconfig ===" \
+    && grep -E 'CONFIG_DEBUG_INFO|CONFIG_DEBUG_KERNEL|CONFIG_DEBUG_INFO_BTF' .config \
+    && make -j"$(nproc)" vmlinux \
+    && readelf -S vmlinux | grep -i btf \
+    && make -j"$(nproc)" -C tools/bpf/bpftool \
+    && ./tools/bpf/bpftool/bpftool btf dump file ./vmlinux format c > /tmp/vmlinux.h
 
 # ---------------------------------------------------------------------------
 # arm64 kernel (Virtualization.framework)
@@ -58,6 +65,7 @@ RUN cd /tmp/linux-src \
 # ---------------------------------------------------------------------------
 FROM scratch AS output-x86_64
 COPY --from=build-x86_64 /tmp/linux-src/vmlinux /kernel
+COPY --from=build-x86_64 /tmp/vmlinux.h /vmlinux.h
 
 FROM scratch AS output-arm64
 COPY --from=build-arm64 /tmp/linux-src/arch/arm64/boot/Image /kernel-arm64

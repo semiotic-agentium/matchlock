@@ -20,6 +20,7 @@ import (
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
 	"github.com/jingkaihe/matchlock/pkg/policy"
 	"github.com/jingkaihe/matchlock/pkg/state"
+	"github.com/jingkaihe/matchlock/pkg/ebpf"
 	"github.com/jingkaihe/matchlock/pkg/vfs"
 	"github.com/jingkaihe/matchlock/pkg/vm"
 	"github.com/jingkaihe/matchlock/pkg/vm/linux"
@@ -45,6 +46,8 @@ type Sandbox struct {
 	vfsHooks         *vfs.HookEngine
 	vfsServer        *vfs.VFSServer
 	vfsStopFunc      func()
+	ebpfCollector    *ebpf.Collector
+	ebpfStopFunc     func()
 	events           chan api.Event
 	stateMgr         *state.Manager
 	tapName          string
@@ -246,6 +249,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		SubnetCIDR:          subnetCIDR,
 		Workspace:           workspace,
 		Privileged:          config.Privileged,
+		EBPFEnabled:         ebpfTracerAvailable(),
 		ExtraDisks:          extraDisks,
 		DNSServers:          config.Network.GetDNSServers(),
 		Hostname:            hostname,
@@ -413,6 +417,22 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		return nil, errx.Wrap(ErrVFSServer, err)
 	}
 
+	// Start eBPF event collector if the tracer binary was injected.
+	// The collector listens on the vsock UDS for guest connections on port 5003.
+	var ebpfCollectorInst *ebpf.Collector
+	var ebpfStopFn func()
+	ebpfTracerPath := DefaultEBPFTracerPath()
+	if _, statErr := os.Stat(ebpfTracerPath); statErr == nil {
+		ebpfSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, ebpf.VsockPortEBPF)
+		ebpfOutputPath := filepath.Join(filepath.Dir(vmConfig.VsockPath), "ebpf-events.jsonl")
+		ebpfCollectorInst = ebpf.NewCollector(ebpfOutputPath)
+		ebpfStopFn, err = ebpfCollectorInst.ServeUDSBackground(ebpfSocketPath)
+		if err != nil {
+			slog.Warn("ebpf collector failed to start", "error", err)
+			// Non-fatal: sandbox continues without eBPF collection
+		}
+	}
+
 	sb = &Sandbox{
 		id:               id,
 		config:           config,
@@ -426,6 +446,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		vfsHooks:         vfsHooks,
 		vfsServer:        vfsServer,
 		vfsStopFunc:      vfsStopFunc,
+		ebpfCollector:    ebpfCollectorInst,
+		ebpfStopFunc:     ebpfStopFn,
 		events:           events,
 		stateMgr:         stateMgr,
 		tapName:          linuxMachine.TapName(),
@@ -545,6 +567,13 @@ func (s *Sandbox) Events() <-chan api.Event {
 	return s.events
 }
 
+// ebpfTracerAvailable returns true if the eBPF tracer binary is present on the host.
+func ebpfTracerAvailable() bool {
+	path := DefaultEBPFTracerPath()
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // Close shuts down the sandbox and releases all resources.
 func (s *Sandbox) Close(ctx context.Context) error {
 	var errs []error
@@ -563,6 +592,11 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		if err := s.lifecycle.SetPhase(lifecycle.PhaseCleaning); err != nil {
 			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
 		}
+	}
+
+	if s.ebpfStopFunc != nil {
+		s.ebpfStopFunc()
+		markCleanup("ebpf_stop", nil)
 	}
 
 	if s.vfsStopFunc != nil {

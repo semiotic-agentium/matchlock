@@ -40,6 +40,7 @@ type VMConfig struct {
 	Workspace           string              // Guest VFS mount point (default: /workspace)
 	UseInterception     bool                // Use network interception (MITM proxy)
 	Privileged          bool                // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
+	EBPFEnabled         bool                // Enable eBPF process/file tracing in the guest
 	DNSServers          []string            // DNS servers for the guest (default: 8.8.8.8, 8.8.4.4)
 	Hostname            string              // Hostname for the guest (default: vm's ID)
 	AddHosts            []api.HostIPMapping // Additional /etc/hosts entries injected at boot

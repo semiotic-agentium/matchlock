@@ -28,6 +28,10 @@ const (
 	EventRouteDecision     = "route_decision"     // NEW
 	EventRequestTransform  = "request_transform"  // NEW
 	EventResponseTransform = "response_transform" // NEW
+
+	// eBPF plugin event types. The engine emits "ebpf_<plugin_name>" as the
+	// event type, but these constants provide well-known names for built-in plugins.
+	EventEBPFSensitiveFileAccess = "ebpf_sensitive_file_monitor"
 )
 
 // HTTPRequestData is the data payload for http_request events.

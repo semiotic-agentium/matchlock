@@ -49,6 +49,18 @@ type Config struct {
 	ExtraDisks []DiskMount       `json:"extra_disks,omitempty"`
 	ImageCfg   *ImageConfig      `json:"image_config,omitempty"`
 	Logging    *LoggingConfig    `json:"logging,omitempty"`
+	EBPF       *EBPFConfig       `json:"ebpf,omitempty"`
+}
+
+// EBPFConfig configures eBPF-based process and file monitoring plugins.
+type EBPFConfig struct {
+	// DebugLog enables writing raw eBPF events to a separate JSONL file
+	// in the VM state directory. When false (default), only plugin-emitted
+	// policy events are written to the shared event log.
+	DebugLog bool           `json:"debug_log,omitempty"`
+	// Plugins contains eBPF plugin configurations.
+	// Each plugin processes the event stream and can alert or kill processes.
+	Plugins  []PluginConfig `json:"plugins,omitempty"`
 }
 
 // DiskMount describes a persistent ext4 disk image to attach as a block device.

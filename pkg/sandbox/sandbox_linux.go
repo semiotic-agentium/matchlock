@@ -417,19 +417,50 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		return nil, errx.Wrap(ErrVFSServer, err)
 	}
 
-	// Start eBPF event collector if the tracer binary was injected.
-	// The collector listens on the vsock UDS for guest connections on port 5003.
+	// Build eBPF plugin engine and collector if the tracer binary is available.
 	var ebpfCollectorInst *ebpf.Collector
 	var ebpfStopFn func()
 	ebpfTracerPath := DefaultEBPFTracerPath()
 	if _, statErr := os.Stat(ebpfTracerPath); statErr == nil {
+		// Build plugin engine if eBPF plugins are configured
+		var ebpfEngine *ebpf.Engine
+		if config.EBPF != nil && len(config.EBPF.Plugins) > 0 {
+			// KillFunc runs "kill -9 <pid>" inside the guest via the exec relay
+			killFunc := func(ctx context.Context, pid int) error {
+				cmd := fmt.Sprintf("kill -9 %d", pid)
+				_, killErr := execCommand(ctx, machine, config, caPool, policyEngine, cmd, nil)
+				return killErr
+			}
+			ebpfEngine = ebpf.NewEngine(emitter, killFunc, slog.Default())
+			for _, pluginCfg := range config.EBPF.Plugins {
+				if !pluginCfg.IsEnabled() {
+					continue
+				}
+				factory, ok := ebpf.LookupFactory(pluginCfg.Type)
+				if !ok {
+					slog.Warn("ebpf: unknown plugin type", "type", pluginCfg.Type)
+					continue
+				}
+				p, factoryErr := factory(pluginCfg.Config, slog.Default())
+				if factoryErr != nil {
+					slog.Warn("ebpf: plugin creation failed", "type", pluginCfg.Type, "error", factoryErr)
+					continue
+				}
+				ebpfEngine.AddPlugin(p)
+			}
+		}
+
+		// Determine debug log path (raw JSONL output)
+		debugLogPath := ""
+		if config.EBPF != nil && config.EBPF.DebugLog {
+			debugLogPath = filepath.Join(filepath.Dir(vmConfig.VsockPath), "ebpf-events.jsonl")
+		}
+
 		ebpfSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, ebpf.VsockPortEBPF)
-		ebpfOutputPath := filepath.Join(filepath.Dir(vmConfig.VsockPath), "ebpf-events.jsonl")
-		ebpfCollectorInst = ebpf.NewCollector(ebpfOutputPath)
+		ebpfCollectorInst = ebpf.NewCollector(ebpfEngine, debugLogPath)
 		ebpfStopFn, err = ebpfCollectorInst.ServeUDSBackground(ebpfSocketPath)
 		if err != nil {
 			slog.Warn("ebpf collector failed to start", "error", err)
-			// Non-fatal: sandbox continues without eBPF collection
 		}
 	}
 

@@ -348,6 +348,10 @@ done
 echo "Built guest runtime binaries for amd64 and arm64"
 """
 
+[tasks."build:ebpf-tracer"]
+description = "Build eBPF tracer binary (Docker-based, x86_64 only)"
+run = "./scripts/build-ebpf-tracer.sh"
+
 # =============================================================================
 # Release tasks
 # =============================================================================

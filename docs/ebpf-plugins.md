@@ -477,32 +477,74 @@ jq 'select(.event == "EXEC") | {comm, pid, ppid, filename}' ebpf-events.jsonl
 jq 'select(.event == "EXIT" and .duration_ms > 1000)' ebpf-events.jsonl
 ```
 
+## Building the eBPF Tracer
+
+The eBPF tracer is a standalone C binary that runs inside the guest VM. It is built as a static binary using a multi-stage Docker build.
+
+### Prerequisites
+
+- Docker with BuildKit
+
+### Build
+
+```bash
+./scripts/build-ebpf-tracer.sh
+```
+
+This compiles the kernel eBPF programs, generates the BPF skeleton header, and links a static userspace binary. The output is placed at `~/.cache/matchlock/ebpf-tracer`.
+
+The `vmlinux.h` header (kernel type definitions for BPF CO-RE) is generated automatically inside the Docker build from the installed kernel's BTF data — it does not need to be checked into the repo.
+
+### Output
+
+| File | Location | Description |
+|------|----------|-------------|
+| `ebpf-tracer` | `~/.cache/matchlock/ebpf-tracer` | Static x86_64 binary, injected into guest rootfs at `/opt/matchlock/ebpf-tracer` |
+
+The binary is discovered at runtime by `DefaultEBPFTracerPath()` in `pkg/sandbox/paths.go`, which checks (in order): the `MATCHLOCK_EBPF_TRACER` env var, the matchlock binary's directory, then `~/.cache/matchlock/ebpf-tracer`.
+
+### Architecture
+
+The tracer is currently x86_64-only. The eBPF kernel programs target `__TARGET_ARCH_x86` and the userspace binary is compiled for the x86_64 platform.
+
 ## File Map
 
 ```
+ebpf/                               # eBPF tracer source (C, built via Docker)
+  Dockerfile                        # Multi-stage build: BPF compile → static link
+  bpf/
+    process.bpf.c                   # Kernel eBPF programs (tracepoints)
+    process.c                       # Userspace tracer (vsock output, JSONL)
+    process.h                       # Event structures
+    process_utils.h                 # /proc reading utilities
+    process_filter.h                # PID/command filtering logic
+
+scripts/
+  build-ebpf-tracer.sh             # Docker build wrapper
+
 pkg/ebpf/
-  plugin.go                     # Interfaces (Plugin, EventPlugin, EventVerdict, EBPFEvent)
-  registry.go                   # Factory registry (Register, LookupFactory, RegisteredTypes)
-  engine.go                     # Orchestrator (NewEngineFromConfig, ProcessEvent, AddPlugin)
-  collector.go                  # Vsock listener (accepts guest connection, parses JSONL)
-  sensitive_file_monitor.go     # EventPlugin: sensitive file access detection
+  plugin.go                        # Interfaces (Plugin, EventPlugin, EventVerdict, EBPFEvent)
+  registry.go                      # Factory registry (Register, LookupFactory, RegisteredTypes)
+  engine.go                        # Orchestrator (NewEngineFromConfig, ProcessEvent, AddPlugin)
+  collector.go                     # Vsock listener (accepts guest connection, parses JSONL)
+  sensitive_file_monitor.go        # EventPlugin: sensitive file access detection
 
 pkg/api/
-  config.go                     # EBPFConfig, PluginConfig, ValidatePluginTypes
-  ebpf.go                       # ParseEBPFPlugin (CLI flag parser)
-  errors.go                     # ErrUnknownEBPFPlugin, ErrEBPFPluginFormat
+  config.go                        # EBPFConfig, PluginConfig, ValidatePluginTypes
+  ebpf.go                          # ParseEBPFPlugin (CLI flag parser)
+  errors.go                        # ErrUnknownEBPFPlugin, ErrEBPFPluginFormat
 
 pkg/sandbox/
-  sandbox_linux.go              # Wires engine + collector into sandbox lifecycle
-  rootfs.go                     # Injects ebpf-tracer binary into guest rootfs
-  paths.go                      # DefaultEBPFTracerPath resolution
+  sandbox_linux.go                 # Wires engine + collector into sandbox lifecycle
+  rootfs.go                        # Injects ebpf-tracer binary into guest rootfs
+  paths.go                         # DefaultEBPFTracerPath resolution
 
 pkg/sdk/
-  builder.go                    # WithEBPFPlugin, WithEBPFDebugLog
-  client.go                     # EBPFPlugins, EBPFDebugLog in CreateOptions
+  builder.go                       # WithEBPFPlugin, WithEBPFDebugLog
+  client.go                        # EBPFPlugins, EBPFDebugLog in CreateOptions
 
 cmd/guest-init/
-  main.go                       # Starts ebpf-tracer in guest (before seccomp)
+  main.go                          # Starts ebpf-tracer in guest (before seccomp)
 ```
 
 ## Log Output

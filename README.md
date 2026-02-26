@@ -259,6 +259,7 @@ Plugins are composable and extensible. See [Network Plugins](docs/network-plugin
 
 - [Lifecycle and Cleanup Runbook](docs/lifecycle.md)
 - [Network Plugins](docs/network-plugins.md)
+- [eBPF Plugins](docs/ebpf-plugins.md)
 - [VFS Interception](docs/vfs-interception.md)
 - [Developer Reference](AGENTS.md)
 

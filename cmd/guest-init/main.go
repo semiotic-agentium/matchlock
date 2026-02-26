@@ -638,8 +638,8 @@ func startEBPFTracer(path string) error {
 		return fmt.Errorf("ebpf-tracer binary not found at %s", path)
 	}
 	cmd := exec.Command(path, "-m", "0") // filter mode 0 = trace all
-	cmd.Stdout = os.Stderr               // tracer diagnostics go to serial console
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = nil                     // tracer communicates via vsock, not stdout
+	cmd.Stderr = os.Stderr               // diagnostics go to serial console
 	if err := cmd.Start(); err != nil {
 		return fmt.Errorf("start ebpf-tracer: %w", err)
 	}

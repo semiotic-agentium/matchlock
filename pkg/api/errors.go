@@ -32,4 +32,7 @@ var (
 	ErrAddHostIP         = errors.New("invalid add-host ip")
 
 	ErrLocalModelRouteFormat = errors.New("invalid local-model-route format")
+
+	ErrUnknownEBPFPlugin  = errors.New("unknown eBPF plugin type")
+	ErrEBPFPluginFormat   = errors.New("invalid eBPF plugin format")
 )

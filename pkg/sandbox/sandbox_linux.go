@@ -249,7 +249,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		SubnetCIDR:          subnetCIDR,
 		Workspace:           workspace,
 		Privileged:          config.Privileged,
-		EBPFEnabled:         ebpfTracerAvailable(),
+		EBPFEnabled:         config.EBPF != nil && ebpfTracerAvailable(),
 		ExtraDisks:          extraDisks,
 		DNSServers:          config.Network.GetDNSServers(),
 		Hostname:            hostname,
@@ -417,42 +417,33 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		return nil, errx.Wrap(ErrVFSServer, err)
 	}
 
-	// Build eBPF plugin engine and collector if the tracer binary is available.
+	// Build eBPF plugin engine and collector when eBPF is configured.
 	var ebpfCollectorInst *ebpf.Collector
 	var ebpfStopFn func()
-	ebpfTracerPath := DefaultEBPFTracerPath()
-	if _, statErr := os.Stat(ebpfTracerPath); statErr == nil {
-		// Build plugin engine if eBPF plugins are configured
-		var ebpfEngine *ebpf.Engine
-		if config.EBPF != nil && len(config.EBPF.Plugins) > 0 {
-			// KillFunc runs "kill -9 <pid>" inside the guest via the exec relay
-			killFunc := func(ctx context.Context, pid int) error {
-				cmd := fmt.Sprintf("kill -9 %d", pid)
-				_, killErr := execCommand(ctx, machine, config, caPool, policyEngine, cmd, nil)
-				return killErr
+	if config.EBPF != nil {
+		// KillFunc runs "kill -9 <pid>" inside the guest via the exec relay
+		killFunc := func(ctx context.Context, pid int) error {
+			cmd := fmt.Sprintf("kill -9 %d", pid)
+			_, killErr := execCommand(ctx, machine, config, caPool, policyEngine, cmd, nil)
+			return killErr
+		}
+		ebpfEngine, engineErr := ebpf.NewEngineFromConfig(config.EBPF, emitter, killFunc, slog.Default())
+		if engineErr != nil {
+			if proxy != nil {
+				proxy.Close()
 			}
-			ebpfEngine = ebpf.NewEngine(emitter, killFunc, slog.Default())
-			for _, pluginCfg := range config.EBPF.Plugins {
-				if !pluginCfg.IsEnabled() {
-					continue
-				}
-				factory, ok := ebpf.LookupFactory(pluginCfg.Type)
-				if !ok {
-					slog.Warn("ebpf: unknown plugin type", "type", pluginCfg.Type)
-					continue
-				}
-				p, factoryErr := factory(pluginCfg.Config, slog.Default())
-				if factoryErr != nil {
-					slog.Warn("ebpf: plugin creation failed", "type", pluginCfg.Type, "error", factoryErr)
-					continue
-				}
-				ebpfEngine.AddPlugin(p)
+			if fwRules != nil {
+				fwRules.Cleanup()
 			}
+			machine.Close(ctx)
+			releaseSubnet()
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("ebpf engine: %w", engineErr)
 		}
 
 		// Determine debug log path (raw JSONL output)
 		debugLogPath := ""
-		if config.EBPF != nil && config.EBPF.DebugLog {
+		if config.EBPF.DebugLog {
 			debugLogPath = filepath.Join(filepath.Dir(vmConfig.VsockPath), "ebpf-events.jsonl")
 		}
 

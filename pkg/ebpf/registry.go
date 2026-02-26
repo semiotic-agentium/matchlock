@@ -37,3 +37,15 @@ func LookupFactory(typeName string) (PluginFactory, bool) {
 	f, ok := registry[typeName]
 	return f, ok
 }
+
+// RegisteredTypes returns the names of all registered plugin types.
+// Useful for validation, documentation, and CLI help text.
+func RegisteredTypes() []string {
+	registryMu.RLock()
+	defer registryMu.RUnlock()
+	types := make([]string, 0, len(registry))
+	for name := range registry {
+		types = append(types, name)
+	}
+	return types
+}

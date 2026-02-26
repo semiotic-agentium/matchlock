@@ -2,8 +2,10 @@ package ebpf
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 
+	"github.com/jingkaihe/matchlock/pkg/api"
 	"github.com/jingkaihe/matchlock/pkg/logging"
 )
 
@@ -93,6 +95,35 @@ func (e *Engine) ProcessEvent(ctx context.Context, event *EBPFEvent) {
 			}
 		}
 	}
+}
+
+// NewEngineFromConfig creates an eBPF plugin engine from an EBPFConfig.
+// It looks up each plugin type in the global registry, instantiates it,
+// and adds it to the engine. Returns an error if any plugin type is unknown
+// or if a factory fails — security enforcement plugins should not silently fail.
+func NewEngineFromConfig(config *api.EBPFConfig, emitter *logging.Emitter, killFunc KillFunc, logger *slog.Logger) (*Engine, error) {
+	e := NewEngine(emitter, killFunc, logger)
+	if config == nil {
+		return e, nil
+	}
+	for _, pluginCfg := range config.Plugins {
+		if !pluginCfg.IsEnabled() {
+			e.logger.Debug("ebpf plugin disabled, skipping", "type", pluginCfg.Type)
+			continue
+		}
+		factory, ok := LookupFactory(pluginCfg.Type)
+		if !ok {
+			return nil, fmt.Errorf("unknown eBPF plugin type: %q", pluginCfg.Type)
+		}
+		pluginLogger := e.logger.With("plugin", pluginCfg.Type)
+		p, err := factory(pluginCfg.Config, pluginLogger)
+		if err != nil {
+			return nil, fmt.Errorf("eBPF plugin %q: %w", pluginCfg.Type, err)
+		}
+		e.AddPlugin(p)
+	}
+	e.logger.Info("ebpf engine ready", "plugins", e.PluginCount())
+	return e, nil
 }
 
 // PluginCount returns the number of registered plugins.

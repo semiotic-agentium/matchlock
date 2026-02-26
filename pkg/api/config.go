@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -61,6 +62,26 @@ type EBPFConfig struct {
 	// Plugins contains eBPF plugin configurations.
 	// Each plugin processes the event stream and can alert or kill processes.
 	Plugins  []PluginConfig `json:"plugins,omitempty"`
+}
+
+// ValidatePluginTypes checks that all configured plugin types are present
+// in the available list. Pass ebpf.RegisteredTypes() as available.
+// The available parameter avoids an import cycle (api cannot import ebpf).
+func (c *EBPFConfig) ValidatePluginTypes(available []string) error {
+	if c == nil {
+		return nil
+	}
+	avail := make(map[string]bool, len(available))
+	for _, t := range available {
+		avail[t] = true
+	}
+	for _, p := range c.Plugins {
+		if !avail[p.Type] {
+			return errx.With(ErrUnknownEBPFPlugin, ": %q (available: %s)",
+				p.Type, strings.Join(available, ", "))
+		}
+	}
+	return nil
 }
 
 // DiskMount describes a persistent ext4 disk image to attach as a block device.

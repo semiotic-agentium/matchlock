@@ -331,3 +331,105 @@ func TestBuilderWithPluginSerialization(t *testing.T) {
 	require.Len(t, pluginSlice, 1)
 	assert.Equal(t, "host_filter", pluginSlice[0].Type)
 }
+
+func TestBuilderWithEBPFPlugin(t *testing.T) {
+	opts := New("alpine:latest").
+		WithEBPFPlugin("sensitive_file_monitor", nil).
+		Options()
+
+	require.Len(t, opts.EBPFPlugins, 1)
+	assert.Equal(t, "sensitive_file_monitor", opts.EBPFPlugins[0].Type)
+	assert.Nil(t, opts.EBPFPlugins[0].Config)
+}
+
+func TestBuilderWithEBPFPluginConfig(t *testing.T) {
+	opts := New("alpine:latest").
+		WithEBPFPlugin("sensitive_file_monitor", json.RawMessage(`{"kill":true}`)).
+		Options()
+
+	require.Len(t, opts.EBPFPlugins, 1)
+	assert.Equal(t, "sensitive_file_monitor", opts.EBPFPlugins[0].Type)
+	assert.JSONEq(t, `{"kill":true}`, string(opts.EBPFPlugins[0].Config))
+}
+
+func TestBuilderWithMultipleEBPFPlugins(t *testing.T) {
+	opts := New("alpine:latest").
+		WithEBPFPlugin("sensitive_file_monitor", nil).
+		WithEBPFPlugin("sensitive_file_monitor", json.RawMessage(`{"kill":true}`)).
+		Options()
+
+	require.Len(t, opts.EBPFPlugins, 2)
+	assert.Equal(t, "sensitive_file_monitor", opts.EBPFPlugins[0].Type)
+	assert.Equal(t, "sensitive_file_monitor", opts.EBPFPlugins[1].Type)
+}
+
+func TestBuilderWithEBPFDebugLog(t *testing.T) {
+	opts := New("alpine:latest").
+		WithEBPFDebugLog().
+		Options()
+
+	assert.True(t, opts.EBPFDebugLog)
+}
+
+func TestBuilderEBPFDefaultsOff(t *testing.T) {
+	opts := New("alpine:latest").Options()
+	assert.Empty(t, opts.EBPFPlugins)
+	assert.False(t, opts.EBPFDebugLog)
+}
+
+func TestBuildCreateEBPFParams_WithPlugins(t *testing.T) {
+	opts := CreateOptions{
+		Image: "alpine:latest",
+		EBPFPlugins: []PluginConfig{
+			{Type: "sensitive_file_monitor", Config: json.RawMessage(`{"kill":true}`)},
+		},
+		EBPFDebugLog: true,
+	}
+
+	params := buildCreateEBPFParams(opts)
+	require.NotNil(t, params)
+
+	debugLog, ok := params["debug_log"]
+	require.True(t, ok)
+	assert.Equal(t, true, debugLog)
+
+	plugins, ok := params["plugins"]
+	require.True(t, ok)
+	pluginSlice, ok := plugins.([]PluginConfig)
+	require.True(t, ok)
+	require.Len(t, pluginSlice, 1)
+	assert.Equal(t, "sensitive_file_monitor", pluginSlice[0].Type)
+}
+
+func TestBuildCreateEBPFParams_NoConfig(t *testing.T) {
+	opts := CreateOptions{Image: "alpine:latest"}
+	params := buildCreateEBPFParams(opts)
+	assert.Nil(t, params)
+}
+
+func TestBuildCreateEBPFParams_DebugLogOnly(t *testing.T) {
+	opts := CreateOptions{
+		Image:        "alpine:latest",
+		EBPFDebugLog: true,
+	}
+	params := buildCreateEBPFParams(opts)
+	require.NotNil(t, params)
+	assert.Equal(t, true, params["debug_log"])
+	_, hasPlugins := params["plugins"]
+	assert.False(t, hasPlugins)
+}
+
+func TestBuildCreateEBPFParams_PluginsOnly(t *testing.T) {
+	opts := CreateOptions{
+		Image: "alpine:latest",
+		EBPFPlugins: []PluginConfig{
+			{Type: "test_plugin"},
+		},
+	}
+	params := buildCreateEBPFParams(opts)
+	require.NotNil(t, params)
+	_, hasDebugLog := params["debug_log"]
+	assert.False(t, hasDebugLog)
+	_, hasPlugins := params["plugins"]
+	assert.True(t, hasPlugins)
+}

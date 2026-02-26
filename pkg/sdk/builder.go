@@ -313,6 +313,23 @@ func (b *SandboxBuilder) WithPlugin(cfg PluginConfig) *SandboxBuilder {
 	return b
 }
 
+// WithEBPFPlugin adds an eBPF event plugin configuration.
+// pluginType is the registered plugin type name (e.g., "sensitive_file_monitor").
+// config is optional plugin-specific JSON configuration (nil for defaults).
+func (b *SandboxBuilder) WithEBPFPlugin(pluginType string, config json.RawMessage) *SandboxBuilder {
+	b.opts.EBPFPlugins = append(b.opts.EBPFPlugins, PluginConfig{
+		Type:   pluginType,
+		Config: config,
+	})
+	return b
+}
+
+// WithEBPFDebugLog enables writing raw eBPF events to a JSONL file.
+func (b *SandboxBuilder) WithEBPFDebugLog() *SandboxBuilder {
+	b.opts.EBPFDebugLog = true
+	return b
+}
+
 // Options returns the underlying CreateOptions. Useful when you need to pass
 // the options to Client.Create directly.
 func (b *SandboxBuilder) Options() CreateOptions {

@@ -248,6 +248,10 @@ type CreateOptions struct {
 	LocalModelRoutes []LocalModelRouteOption
 	// Plugins configures explicit network policy plugins.
 	Plugins []PluginConfig
+	// EBPFPlugins configures eBPF event plugins for kernel-level monitoring.
+	EBPFPlugins []PluginConfig
+	// EBPFDebugLog enables writing raw eBPF events to a JSONL file.
+	EBPFDebugLog bool
 }
 
 // ImageConfig holds OCI image metadata for user/entrypoint/cmd/workdir/env.
@@ -496,6 +500,10 @@ func (c *Client) Create(opts CreateOptions) (string, error) {
 		params["image_config"] = opts.ImageConfig
 	}
 
+	if ebpfParams := buildCreateEBPFParams(opts); ebpfParams != nil {
+		params["ebpf"] = ebpfParams
+	}
+
 	result, err := c.sendRequest("create", params)
 	if err != nil {
 		return "", err
@@ -618,6 +626,24 @@ func buildCreateNetworkParams(opts CreateOptions) map[string]interface{} {
 		network["plugins"] = opts.Plugins
 	}
 	return network
+}
+
+func buildCreateEBPFParams(opts CreateOptions) map[string]interface{} {
+	hasPlugins := len(opts.EBPFPlugins) > 0
+	hasDebugLog := opts.EBPFDebugLog
+
+	if !hasPlugins && !hasDebugLog {
+		return nil
+	}
+
+	ebpfCfg := make(map[string]interface{})
+	if hasDebugLog {
+		ebpfCfg["debug_log"] = true
+	}
+	if hasPlugins {
+		ebpfCfg["plugins"] = opts.EBPFPlugins
+	}
+	return ebpfCfg
 }
 
 func resolveCreateBlockPrivateIPs(opts CreateOptions) (value bool, hasOverride bool) {

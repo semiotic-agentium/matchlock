@@ -14,6 +14,17 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// shortSocketPath returns a Unix socket path short enough for macOS's
+// 104-byte sun_path limit. t.TempDir() paths can exceed this limit
+// when test names are long.
+func shortSocketPath(t *testing.T) string {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "ebpf")
+	require.NoError(t, err)
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	return filepath.Join(dir, "s.sock")
+}
+
 // recordingEngine wraps a real engine and records received events.
 type recordingEngine struct {
 	events []*EBPFEvent
@@ -35,7 +46,7 @@ func newRecordingPlugin() (*mockEventPlugin, *recordingEngine) {
 }
 
 func TestCollector_ServeAndReceiveEvents(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "test.sock")
+	socketPath := shortSocketPath(t)
 
 	// Create engine with a recording plugin
 	plugin := &mockEventPlugin{name: "recorder", verdict: nil}
@@ -77,9 +88,8 @@ func TestCollector_ServeAndReceiveEvents(t *testing.T) {
 }
 
 func TestCollector_DebugLog(t *testing.T) {
-	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "test.sock")
-	debugLogPath := filepath.Join(dir, "debug.jsonl")
+	socketPath := shortSocketPath(t)
+	debugLogPath := filepath.Join(t.TempDir(), "debug.jsonl")
 
 	collector := NewCollector(nil, debugLogPath)
 	stop, err := collector.ServeUDSBackground(socketPath)
@@ -117,9 +127,8 @@ func TestCollector_DebugLog(t *testing.T) {
 }
 
 func TestCollector_NilEngine(t *testing.T) {
-	dir := t.TempDir()
-	socketPath := filepath.Join(dir, "test.sock")
-	debugLogPath := filepath.Join(dir, "debug.jsonl")
+	socketPath := shortSocketPath(t)
+	debugLogPath := filepath.Join(t.TempDir(), "debug.jsonl")
 
 	// nil engine — should still write to debug log without crashing
 	collector := NewCollector(nil, debugLogPath)
@@ -144,7 +153,7 @@ func TestCollector_NilEngine(t *testing.T) {
 }
 
 func TestCollector_MalformedJSON(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "test.sock")
+	socketPath := shortSocketPath(t)
 
 	plugin := &mockEventPlugin{name: "recorder", verdict: nil}
 	engine := NewEngine(nil, nil, nil)
@@ -173,7 +182,7 @@ func TestCollector_MalformedJSON(t *testing.T) {
 }
 
 func TestCollector_EmptyLines(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "test.sock")
+	socketPath := shortSocketPath(t)
 
 	plugin := &mockEventPlugin{name: "recorder", verdict: nil}
 	engine := NewEngine(nil, nil, nil)
@@ -201,7 +210,7 @@ func TestCollector_EmptyLines(t *testing.T) {
 }
 
 func TestCollector_StopClosesListener(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "test.sock")
+	socketPath := shortSocketPath(t)
 
 	collector := NewCollector(nil, "")
 	stop, err := collector.ServeUDSBackground(socketPath)
@@ -215,7 +224,7 @@ func TestCollector_StopClosesListener(t *testing.T) {
 }
 
 func TestCollector_ProcessEventWithAlert(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "test.sock")
+	socketPath := shortSocketPath(t)
 
 	// Use the real sensitive_file_monitor plugin
 	config := SensitiveFileMonitorConfig{Kill: false}
@@ -243,7 +252,7 @@ func TestCollector_ProcessEventWithAlert(t *testing.T) {
 }
 
 func TestCollector_ProcessEventWithKill(t *testing.T) {
-	socketPath := filepath.Join(t.TempDir(), "test.sock")
+	socketPath := shortSocketPath(t)
 
 	config := SensitiveFileMonitorConfig{Kill: true}
 	sfmPlugin := NewSensitiveFileMonitor(config, nil)

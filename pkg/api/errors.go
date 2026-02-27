@@ -33,6 +33,6 @@ var (
 
 	ErrLocalModelRouteFormat = errors.New("invalid local-model-route format")
 
-	ErrUnknownEBPFPlugin  = errors.New("unknown eBPF plugin type")
-	ErrEBPFPluginFormat   = errors.New("invalid eBPF plugin format")
+	ErrUnknownEBPFPlugin = errors.New("unknown eBPF plugin type")
+	ErrEBPFPluginFormat  = errors.New("invalid eBPF plugin format")
 )

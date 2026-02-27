@@ -58,10 +58,10 @@ type EBPFConfig struct {
 	// DebugLog enables writing raw eBPF events to a separate JSONL file
 	// in the VM state directory. When false (default), only plugin-emitted
 	// policy events are written to the shared event log.
-	DebugLog bool           `json:"debug_log,omitempty"`
+	DebugLog bool `json:"debug_log,omitempty"`
 	// Plugins contains eBPF plugin configurations.
 	// Each plugin processes the event stream and can alert or kill processes.
-	Plugins  []PluginConfig `json:"plugins,omitempty"`
+	Plugins []PluginConfig `json:"plugins,omitempty"`
 }
 
 // ValidatePluginTypes checks that all configured plugin types are present

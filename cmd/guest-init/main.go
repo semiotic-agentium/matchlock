@@ -31,9 +31,9 @@ const (
 	etcHostsPath      = "/etc/hosts"
 	etcResolvConfPath = "/etc/resolv.conf"
 
-	guestFusedPath  = "/opt/matchlock/guest-fused"
-	guestAgentPath  = "/opt/matchlock/guest-agent"
-	ebpfTracerPath  = "/opt/matchlock/ebpf-tracer"
+	guestFusedPath = "/opt/matchlock/guest-fused"
+	guestAgentPath = "/opt/matchlock/guest-agent"
+	ebpfTracerPath = "/opt/matchlock/ebpf-tracer"
 
 	defaultWorkspace = "/workspace"
 	defaultPATH      = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"

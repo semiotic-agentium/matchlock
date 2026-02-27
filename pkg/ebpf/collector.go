@@ -28,8 +28,8 @@ const (
 // processes them through the plugin engine, and optionally writes raw
 // events to a debug log file.
 type Collector struct {
-	engine       *Engine  // plugin engine (nil = no plugins)
-	debugLogPath string   // raw JSONL output path (empty = disabled)
+	engine       *Engine // plugin engine (nil = no plugins)
+	debugLogPath string  // raw JSONL output path (empty = disabled)
 	listener     net.Listener
 	mu           sync.Mutex
 	debugFile    *os.File

@@ -4,17 +4,17 @@ package ebpf
 // Fields map to the JSONL output from the process.c userspace binary.
 type EBPFEvent struct {
 	Timestamp   uint64 `json:"timestamp"`
-	Event       string `json:"event"`    // "EXEC", "EXIT", "FILE_OPEN"
-	Comm        string `json:"comm"`     // process command name
-	PID         int    `json:"pid"`      // process ID
+	Event       string `json:"event"` // "EXEC", "EXIT", "FILE_OPEN"
+	Comm        string `json:"comm"`  // process command name
+	PID         int    `json:"pid"`   // process ID
 	PPID        int    `json:"ppid,omitempty"`
 	ExitCode    uint   `json:"exit_code,omitempty"`
 	DurationMS  uint64 `json:"duration_ms,omitempty"`
-	Filename    string `json:"filename,omitempty"`      // exec filename
-	FullCommand string `json:"full_command,omitempty"`  // full command line
-	Filepath    string `json:"filepath,omitempty"`      // file operation path
-	Flags       int    `json:"flags,omitempty"`         // open flags
-	Count       uint32 `json:"count,omitempty"`         // dedup count
+	Filename    string `json:"filename,omitempty"`     // exec filename
+	FullCommand string `json:"full_command,omitempty"` // full command line
+	Filepath    string `json:"filepath,omitempty"`     // file operation path
+	Flags       int    `json:"flags,omitempty"`        // open flags
+	Count       uint32 `json:"count,omitempty"`        // dedup count
 }
 
 // Plugin is the base interface for all eBPF event plugins.

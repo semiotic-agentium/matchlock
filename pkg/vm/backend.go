@@ -37,7 +37,7 @@ type VMConfig struct {
 	GatewayIP           string              // Host TAP IP (e.g., 192.168.100.1)
 	GuestIP             string              // Guest IP (e.g., 192.168.100.2)
 	SubnetCIDR          string              // CIDR notation (e.g., 192.168.100.1/24)
-	Workspace           string              // Guest VFS mount point (default: /workspace)
+	Workspace           string              // Guest VFS mount point (empty when VFS is disabled)
 	UseInterception     bool                // Use network interception (MITM proxy)
 	Privileged          bool                // Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)
 	DNSServers          []string            // DNS servers for the guest (default: 8.8.8.8, 8.8.4.4)
@@ -45,7 +45,6 @@ type VMConfig struct {
 	AddHosts            []api.HostIPMapping // Additional /etc/hosts entries injected at boot
 	MTU                 int                 // Guest interface/network stack MTU (default: 1500)
 	NoNetwork           bool                // Disable guest network interface entirely
-	NoWorkspace         bool                // Skip guest VFS/FUSE mount (no -v volumes)
 	PrebuiltRootfs      string              // Pre-prepared rootfs path (skips internal copy if set)
 	ExtraDisks          []DiskConfig        // Additional block devices to attach
 }
@@ -60,6 +59,9 @@ type Machine interface {
 	Stop(ctx context.Context) error
 	Wait(ctx context.Context) error
 	Exec(ctx context.Context, command string, opts *api.ExecOptions) (*api.ExecResult, error)
+	WriteFile(ctx context.Context, path string, content []byte, mode uint32) error
+	ReadFile(ctx context.Context, path string) ([]byte, error)
+	ListFiles(ctx context.Context, path string) ([]api.FileInfo, error)
 	NetworkFD() (int, error)
 	VsockFD() (int, error)
 	PID() int

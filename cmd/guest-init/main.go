@@ -68,6 +68,7 @@ type bootConfig struct {
 	MTU         int
 	NoNetwork   bool
 	EBPFEnabled bool
+	NoWorkspace bool
 	Disks       []diskMount
 	Overlay     overlayBootConfig
 }
@@ -139,12 +140,14 @@ func runInit() {
 	}
 	mountExtraDisks(cfg.Disks)
 
-	if err := startGuestFused(guestFusedPath); err != nil {
-		fatal(err)
-	}
+	if !cfg.NoWorkspace {
+		if err := startGuestFused(guestFusedPath); err != nil {
+			fatal(err)
+		}
 
-	if err := waitForWorkspaceMount(procMountsPath, cfg.Workspace, workspaceWaitMax); err != nil {
-		fatal(err)
+		if err := waitForWorkspaceMount(procMountsPath, cfg.Workspace, workspaceWaitMax); err != nil {
+			fatal(err)
+		}
 	}
 
 	if err := unix.Exec(guestAgentPath, []string{guestAgentPath}, os.Environ()); err != nil {
@@ -205,6 +208,10 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 		case strings.HasPrefix(field, "matchlock.no_network="):
 			v := strings.TrimPrefix(field, "matchlock.no_network=")
 			cfg.NoNetwork = v == "1" || strings.EqualFold(v, "true")
+
+		case strings.HasPrefix(field, "matchlock.no_workspace="):
+			v := strings.TrimPrefix(field, "matchlock.no_workspace=")
+			cfg.NoWorkspace = v == "1" || strings.EqualFold(v, "true")
 
 		case strings.HasPrefix(field, "matchlock.disk."):
 			spec := strings.TrimPrefix(field, "matchlock.disk.")

@@ -85,6 +85,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	hostname := config.GetHostname()
 	workspace := config.GetWorkspace()
 	noNetwork := config.Network != nil && config.Network.NoNetwork
+	vfsNeeded := config.VFS != nil && len(config.VFS.Mounts) > 0
 
 	stateMgr := state.NewManager()
 	if err := stateMgr.Register(id, config); err != nil {
@@ -256,6 +257,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		AddHosts:            config.Network.AddHosts,
 		MTU:                 config.Network.GetMTU(),
 		NoNetwork:           noNetwork,
+		NoWorkspace:         !vfsNeeded,
 	}
 
 	machine, err := backend.Create(ctx, vmConfig)
@@ -388,33 +390,41 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
-	// Create VFS providers
-	vfsProviders := buildVFSProviders(config, workspace)
-	vfsRouter := vfs.NewMountRouter(vfsProviders)
-	var vfsRoot vfs.Provider = vfsRouter
-	vfsHooks := buildVFSHookEngine(config)
-	if vfsHooks != nil {
-		attachVFSFileEvents(vfsHooks, events)
-		vfsRoot = vfs.NewInterceptProvider(vfsRoot, vfsHooks)
-	}
+	var vfsRoot vfs.Provider
+	var vfsHooks *vfs.HookEngine
+	var vfsServer *vfs.VFSServer
+	var vfsStopFunc func()
 
-	// Create VFS server for guest FUSE daemon connections
-	vfsServer := vfs.NewVFSServer(vfsRoot)
+	if vfsNeeded {
+		// Create VFS providers
+		vfsProviders := buildVFSProviders(config, workspace)
+		vfsRouter := vfs.NewMountRouter(vfsProviders)
+		vfsRoot = vfsRouter
+		vfsHooks = buildVFSHookEngine(config)
+		if vfsHooks != nil {
+			attachVFSFileEvents(vfsHooks, events)
+			vfsRoot = vfs.NewInterceptProvider(vfsRoot, vfsHooks)
+		}
 
-	// Start VFS server on the vsock UDS path for VFS port
-	vfsSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, linux.VsockPortVFS)
-	vfsStopFunc, err := vfsServer.ServeUDSBackground(vfsSocketPath)
-	if err != nil {
-		if proxy != nil {
-			proxy.Close()
+		// Create VFS server for guest FUSE daemon connections
+		vfsServer = vfs.NewVFSServer(vfsRoot)
+
+		// Start VFS server on the vsock UDS path for VFS port
+		vfsSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, linux.VsockPortVFS)
+		var err error
+		vfsStopFunc, err = vfsServer.ServeUDSBackground(vfsSocketPath)
+		if err != nil {
+			if proxy != nil {
+				proxy.Close()
+			}
+			if fwRules != nil {
+				fwRules.Cleanup()
+			}
+			machine.Close(ctx)
+			releaseSubnet()
+			stateMgr.Unregister(id)
+			return nil, errx.Wrap(ErrVFSServer, err)
 		}
-		if fwRules != nil {
-			fwRules.Cleanup()
-		}
-		machine.Close(ctx)
-		releaseSubnet()
-		stateMgr.Unregister(id)
-		return nil, errx.Wrap(ErrVFSServer, err)
 	}
 
 	// Build eBPF plugin engine and collector when eBPF is configured.

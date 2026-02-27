@@ -295,6 +295,9 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		if m.config.EBPFEnabled {
 			kernelArgs += " matchlock.ebpf=1"
 		}
+		if m.config.NoWorkspace {
+			kernelArgs += " matchlock.no_workspace=1"
+		}
 		devLetter := 'b' // vda is rootfs
 		if m.config.OverlayEnabled {
 			lowerDevs := make([]string, 0, len(m.config.OverlayLowerPaths))

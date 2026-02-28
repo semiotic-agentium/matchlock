@@ -79,6 +79,11 @@ func DefaultGuestInitPath() string {
 	return findGuestBinary("guest-init", "MATCHLOCK_GUEST_INIT")
 }
 
+// DefaultEBPFTracerPath returns the default path to the eBPF tracer binary.
+func DefaultEBPFTracerPath() string {
+	return findGuestBinary("ebpf-tracer", "MATCHLOCK_EBPF_TRACER")
+}
+
 func findGuestBinary(name, envVar string) string {
 	home, _ := os.UserHomeDir()
 	sudoHome := ""

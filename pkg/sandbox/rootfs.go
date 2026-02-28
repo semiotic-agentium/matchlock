@@ -100,6 +100,13 @@ func prepareOverlayUpperRootfs(rootfsPath string) error {
 		{guestInitPath, "/upper/init"},
 	}
 
+	// Inject eBPF tracer if the binary exists on the host.
+	// Activation is controlled by the matchlock.ebpf=1 boot parameter.
+	ebpfTracerPath := DefaultEBPFTracerPath()
+	if _, err := os.Stat(ebpfTracerPath); err == nil {
+		injections = append(injections, injection{ebpfTracerPath, "/upper/opt/matchlock/ebpf-tracer"})
+	}
+
 	for _, inj := range injections {
 		commands = append(commands, fmt.Sprintf("rm %s", inj.guestPath))
 		commands = append(commands, fmt.Sprintf("write %s %s", inj.hostPath, inj.guestPath))

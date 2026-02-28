@@ -15,6 +15,7 @@ import (
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/ebpf"
 	"github.com/jingkaihe/matchlock/pkg/image"
 	"github.com/jingkaihe/matchlock/pkg/sandbox"
 	"github.com/jingkaihe/matchlock/pkg/state"
@@ -108,6 +109,8 @@ func init() {
 	runCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
 	runCmd.Flags().Bool("rm", true, "Remove sandbox after command exits (set --rm=false to keep running)")
 	runCmd.Flags().Bool("privileged", false, "Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)")
+	runCmd.Flags().StringArray("ebpf-plugin", nil, "Enable an eBPF event plugin (TYPE or TYPE=JSON_CONFIG). Repeatable.")
+	runCmd.Flags().Bool("ebpf-debug-log", false, "Write raw eBPF events to a debug JSONL file")
 	runCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, then workspace path)")
 	runCmd.Flags().StringP("user", "u", "", "Run as user (uid, uid:gid, or username; overrides image USER)")
 	runCmd.Flags().String("entrypoint", "", "Override image ENTRYPOINT")
@@ -156,6 +159,8 @@ func runRun(cmd *cobra.Command, args []string) error {
 	pull, _ := cmd.Flags().GetBool("pull")
 	rm, _ := cmd.Flags().GetBool("rm")
 	privileged, _ := cmd.Flags().GetBool("privileged")
+	ebpfPluginSpecs, _ := cmd.Flags().GetStringArray("ebpf-plugin")
+	ebpfDebugLog, _ := cmd.Flags().GetBool("ebpf-debug-log")
 
 	// Resources
 	cpus, _ := cmd.Flags().GetInt("cpus")
@@ -391,6 +396,24 @@ func runRun(cmd *cobra.Command, args []string) error {
 			RunID:        runID,
 			AgentSystem:  agentSystem,
 		}
+	}
+
+	// eBPF plugin configuration
+	if len(ebpfPluginSpecs) > 0 || ebpfDebugLog {
+		ebpfCfg := &api.EBPFConfig{
+			DebugLog: ebpfDebugLog,
+		}
+		for _, spec := range ebpfPluginSpecs {
+			pluginCfg, parseErr := api.ParseEBPFPlugin(spec)
+			if parseErr != nil {
+				return errx.With(parseErr, " %q", spec)
+			}
+			ebpfCfg.Plugins = append(ebpfCfg.Plugins, pluginCfg)
+		}
+		if err := ebpfCfg.ValidatePluginTypes(ebpf.RegisteredTypes()); err != nil {
+			return err
+		}
+		config.EBPF = ebpfCfg
 	}
 
 	if err := config.Network.Validate(); err != nil {

@@ -33,6 +33,7 @@ const (
 
 	guestFusedPath = "/opt/matchlock/guest-fused"
 	guestAgentPath = "/opt/matchlock/guest-agent"
+	ebpfTracerPath = "/opt/matchlock/ebpf-tracer"
 
 	defaultWorkspace = "/workspace"
 	defaultPATH      = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
@@ -66,6 +67,7 @@ type bootConfig struct {
 	Workspace   string
 	MTU         int
 	NoNetwork   bool
+	EBPFEnabled bool
 	NoWorkspace bool
 	Disks       []diskMount
 	Overlay     overlayBootConfig
@@ -116,6 +118,14 @@ func runInit() {
 
 	_ = os.Setenv("PATH", defaultPATH)
 	configureCgroupDelegation()
+
+	// Start eBPF tracer before sandboxing if enabled via boot parameter.
+	// Runs as root with full capabilities (no seccomp applied at this point).
+	if cfg.EBPFEnabled {
+		if err := startEBPFTracer(ebpfTracerPath); err != nil {
+			warnf("ebpf tracer: %v", err)
+		}
+	}
 
 	if err := configureHostname(cfg.Hostname, cfg.AddHosts); err != nil {
 		fatal(err)
@@ -241,6 +251,10 @@ func parseBootConfig(cmdlinePath string) (*bootConfig, error) {
 			cfg.Overlay.UpperDevice = strings.TrimPrefix(field, "matchlock.overlay.upper=")
 			cfg.Overlay.Enabled = true
 
+		case strings.HasPrefix(field, "matchlock.ebpf="):
+			v := strings.TrimPrefix(field, "matchlock.ebpf=")
+			cfg.EBPFEnabled = v == "1" || strings.EqualFold(v, "true")
+
 		case strings.HasPrefix(field, "matchlock.add_host."):
 			spec := strings.TrimPrefix(field, "matchlock.add_host.")
 			i := strings.IndexByte(spec, '=')
@@ -288,6 +302,8 @@ func prepareBaseFilesystems() {
 	_ = os.MkdirAll("/tmp", 01777)
 	_ = os.MkdirAll("/sys/fs/bpf", 0755)
 	_ = os.MkdirAll("/sys/fs/cgroup", 0755)
+	_ = os.MkdirAll("/sys/kernel/debug", 0755)
+	_ = os.MkdirAll("/sys/kernel/tracing", 0755)
 
 	mountIgnore("proc", "/proc", "proc", 0, "")
 	mountIgnore("sys", "/sys", "sysfs", 0, "")
@@ -305,6 +321,11 @@ func prepareBaseFilesystems() {
 	mountIgnore("tmpfs", "/tmp", "tmpfs", 0, "")
 	mountIgnore("bpf", "/sys/fs/bpf", "bpf", 0, "")
 	mountIgnore("cgroup2", "/sys/fs/cgroup", "cgroup2", 0, "")
+	mountIgnore("debugfs", "/sys/kernel/debug", "debugfs", 0, "")
+	mountIgnore("tracefs", "/sys/kernel/tracing", "tracefs", 0, "")
+	// libbpf expects tracefs at /sys/kernel/debug/tracing (legacy path)
+	_ = os.MkdirAll("/sys/kernel/debug/tracing", 0755)
+	mountIgnore("tracefs", "/sys/kernel/debug/tracing", "tracefs", 0, "")
 }
 
 func setupOverlayRoot(cfg overlayBootConfig) error {
@@ -617,6 +638,21 @@ func mountExtraDisks(disks []diskMount) {
 			warnf("mount /dev/%s at %s failed: %v", d.Device, d.Path, err)
 		}
 	}
+}
+
+func startEBPFTracer(path string) error {
+	if !pathExists(path) {
+		return fmt.Errorf("ebpf-tracer binary not found at %s", path)
+	}
+	cmd := exec.Command(path, "-m", "0") // filter mode 0 = trace all
+	cmd.Stdout = nil                     // tracer communicates via vsock, not stdout
+	cmd.Stderr = os.Stderr               // diagnostics go to serial console
+	if err := cmd.Start(); err != nil {
+		return fmt.Errorf("start ebpf-tracer: %w", err)
+	}
+	go func() { _ = cmd.Wait() }()
+	fmt.Fprintf(os.Stderr, "ebpf-tracer: started (pid %d)\n", cmd.Process.Pid)
+	return nil
 }
 
 func startGuestFused(path string) error {

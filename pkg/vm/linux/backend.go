@@ -292,6 +292,9 @@ func (m *LinuxMachine) generateFirecrackerConfig() []byte {
 		if m.config.Privileged {
 			kernelArgs += " matchlock.privileged=1"
 		}
+		if m.config.EBPFEnabled {
+			kernelArgs += " matchlock.ebpf=1"
+		}
 		if m.config.NoWorkspace {
 			kernelArgs += " matchlock.no_workspace=1"
 		}

@@ -15,6 +15,7 @@ import (
 
 	"github.com/jingkaihe/matchlock/internal/errx"
 	"github.com/jingkaihe/matchlock/pkg/api"
+	"github.com/jingkaihe/matchlock/pkg/ebpf"
 	"github.com/jingkaihe/matchlock/pkg/lifecycle"
 	"github.com/jingkaihe/matchlock/pkg/logging"
 	sandboxnet "github.com/jingkaihe/matchlock/pkg/net"
@@ -45,6 +46,8 @@ type Sandbox struct {
 	vfsHooks         *vfs.HookEngine
 	vfsServer        *vfs.VFSServer
 	vfsStopFunc      func()
+	ebpfCollector    *ebpf.Collector
+	ebpfStopFunc     func()
 	events           chan api.Event
 	stateMgr         *state.Manager
 	tapName          string
@@ -247,6 +250,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		SubnetCIDR:          subnetCIDR,
 		Workspace:           workspace,
 		Privileged:          config.Privileged,
+		EBPFEnabled:         config.EBPF != nil && ebpfTracerAvailable(),
 		ExtraDisks:          extraDisks,
 		DNSServers:          config.Network.GetDNSServers(),
 		Hostname:            hostname,
@@ -423,6 +427,44 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		}
 	}
 
+	// Build eBPF plugin engine and collector when eBPF is configured.
+	var ebpfCollectorInst *ebpf.Collector
+	var ebpfStopFn func()
+	if config.EBPF != nil {
+		// KillFunc runs "kill -9 <pid>" inside the guest via the exec relay
+		killFunc := func(ctx context.Context, pid int) error {
+			cmd := fmt.Sprintf("kill -9 %d", pid)
+			_, killErr := execCommand(ctx, machine, config, caPool, policyEngine, cmd, nil)
+			return killErr
+		}
+		ebpfEngine, engineErr := ebpf.NewEngineFromConfig(config.EBPF, emitter, killFunc, slog.Default())
+		if engineErr != nil {
+			if proxy != nil {
+				proxy.Close()
+			}
+			if fwRules != nil {
+				fwRules.Cleanup()
+			}
+			machine.Close(ctx)
+			releaseSubnet()
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("ebpf engine: %w", engineErr)
+		}
+
+		// Determine debug log path (raw JSONL output)
+		debugLogPath := ""
+		if config.EBPF.DebugLog {
+			debugLogPath = filepath.Join(filepath.Dir(vmConfig.VsockPath), "ebpf-events.jsonl")
+		}
+
+		ebpfSocketPath := fmt.Sprintf("%s_%d", vmConfig.VsockPath, ebpf.VsockPortEBPF)
+		ebpfCollectorInst = ebpf.NewCollector(ebpfEngine, debugLogPath)
+		ebpfStopFn, err = ebpfCollectorInst.ServeUDSBackground(ebpfSocketPath)
+		if err != nil {
+			slog.Warn("ebpf collector failed to start", "error", err)
+		}
+	}
+
 	sb = &Sandbox{
 		id:               id,
 		config:           config,
@@ -436,6 +478,8 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		vfsHooks:         vfsHooks,
 		vfsServer:        vfsServer,
 		vfsStopFunc:      vfsStopFunc,
+		ebpfCollector:    ebpfCollectorInst,
+		ebpfStopFunc:     ebpfStopFn,
 		events:           events,
 		stateMgr:         stateMgr,
 		tapName:          linuxMachine.TapName(),
@@ -555,6 +599,13 @@ func (s *Sandbox) Events() <-chan api.Event {
 	return s.events
 }
 
+// ebpfTracerAvailable returns true if the eBPF tracer binary is present on the host.
+func ebpfTracerAvailable() bool {
+	path := DefaultEBPFTracerPath()
+	_, err := os.Stat(path)
+	return err == nil
+}
+
 // Close shuts down the sandbox and releases all resources.
 func (s *Sandbox) Close(ctx context.Context) error {
 	var errs []error
@@ -573,6 +624,11 @@ func (s *Sandbox) Close(ctx context.Context) error {
 		if err := s.lifecycle.SetPhase(lifecycle.PhaseCleaning); err != nil {
 			errs = append(errs, errx.Wrap(ErrLifecycleUpdate, err))
 		}
+	}
+
+	if s.ebpfStopFunc != nil {
+		s.ebpfStopFunc()
+		markCleanup("ebpf_stop", nil)
 	}
 
 	if s.vfsStopFunc != nil {

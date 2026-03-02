@@ -439,6 +439,11 @@ func runRun(cmd *cobra.Command, args []string) error {
 		return errx.Wrap(ErrCreateSandbox, err)
 	}
 
+	if ebpfDebugLog {
+		earlyStateMgr := state.NewManager()
+		fmt.Fprintf(os.Stderr, "eBPF debug log: %s\n", filepath.Join(earlyStateMgr.Dir(sb.ID()), "ebpf-events.jsonl"))
+	}
+
 	if err := sb.Start(ctx); err != nil {
 		closeErr := sb.Close(ctx)
 		if closeErr != nil {
@@ -455,10 +460,6 @@ func runRun(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: failed to start exec relay: %v\n", err)
 	}
 	defer execRelay.Stop()
-
-	if ebpfDebugLog {
-		fmt.Fprintf(os.Stderr, "eBPF debug log: %s\n", filepath.Join(stateMgr.Dir(sb.ID()), "ebpf-events.jsonl"))
-	}
 
 	if !rm {
 		fmt.Fprintf(os.Stderr, "Sandbox %s is running\n", sb.ID())

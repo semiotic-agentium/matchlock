@@ -69,14 +69,14 @@ func (c *Collector) ServeUDSBackground(socketPath string) (stop func(), err erro
 			return nil, fmt.Errorf("open debug log %s: %w", c.debugLogPath, err)
 		}
 		c.debugFile = f
-		slog.Info("ebpf collector: debug log enabled", "path", c.debugLogPath)
+		slog.Debug("ebpf collector: debug log enabled", "path", c.debugLogPath)
 	}
 
 	pluginCount := 0
 	if c.engine != nil {
 		pluginCount = c.engine.PluginCount()
 	}
-	slog.Info("ebpf collector: listening",
+	slog.Debug("ebpf collector: listening",
 		"socket", socketPath,
 		"plugins", pluginCount,
 		"debug_log", c.debugLogPath != "",
@@ -109,7 +109,7 @@ func (c *Collector) serve() {
 			continue
 		}
 
-		slog.Info("ebpf collector: guest tracer connected")
+		slog.Debug("ebpf collector: guest tracer connected")
 		go c.handleConnection(conn)
 	}
 }
@@ -161,5 +161,5 @@ func (c *Collector) handleConnection(conn net.Conn) {
 		}
 	}
 
-	slog.Info("ebpf collector: guest tracer disconnected", "lines_received", lineCount)
+	slog.Debug("ebpf collector: guest tracer disconnected", "lines_received", lineCount)
 }

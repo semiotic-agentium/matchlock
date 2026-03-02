@@ -232,10 +232,6 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	}
 
 	ebpfEnabled := config.EBPF != nil && ebpfTracerAvailable()
-	if config.EBPF != nil && !ebpfEnabled {
-		slog.Warn("ebpf tracer binary not found, guest tracing will not start",
-			"expected_path", DefaultEBPFTracerPath())
-	}
 
 	vmConfig := &vm.VMConfig{
 		ID:                  id,
@@ -436,7 +432,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 	// Build eBPF plugin engine and collector when eBPF is configured.
 	var ebpfCollectorInst *ebpf.Collector
 	var ebpfStopFn func()
-	if config.EBPF != nil {
+	if config.EBPF != nil && ebpfEnabled {
 		// KillFunc runs "kill -9 <pid>" inside the guest via the exec relay
 		killFunc := func(ctx context.Context, pid int) error {
 			cmd := fmt.Sprintf("kill -9 %d", pid)

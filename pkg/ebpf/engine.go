@@ -45,7 +45,7 @@ func NewEngine(emitter *logging.Emitter, killFunc KillFunc, logger *slog.Logger)
 func (e *Engine) AddPlugin(p Plugin) {
 	if ep, ok := p.(EventPlugin); ok {
 		e.plugins = append(e.plugins, ep)
-		e.logger.Info("ebpf engine: registered plugin", "name", p.Name())
+		e.logger.Debug("ebpf engine: registered plugin", "name", p.Name())
 	} else {
 		e.logger.Warn("ebpf engine: plugin does not implement EventPlugin", "name", p.Name())
 	}
@@ -122,7 +122,7 @@ func NewEngineFromConfig(config *api.EBPFConfig, emitter *logging.Emitter, killF
 		}
 		e.AddPlugin(p)
 	}
-	e.logger.Info("ebpf engine ready", "plugins", e.PluginCount())
+	e.logger.Debug("ebpf engine ready", "plugins", e.PluginCount())
 	return e, nil
 }
 

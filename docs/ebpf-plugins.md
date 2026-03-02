@@ -493,7 +493,7 @@ The eBPF tracer is a standalone C binary that runs inside the guest VM. It is bu
 
 This compiles the kernel eBPF programs, generates the BPF skeleton header, and links a static userspace binary. The output is placed at `~/.cache/matchlock/ebpf-tracer`.
 
-The `vmlinux.h` header (kernel type definitions for BPF CO-RE) is generated automatically inside the Docker build from the installed kernel's BTF data — it does not need to be checked into the repo.
+The `vmlinux.h` header (kernel type definitions for BPF CO-RE) is checked into the repo at `ebpf/vmlinux.h` and copied into the Docker build. It provides the kernel data structure definitions required by BPF CO-RE (Compile Once — Run Everywhere) without depending on the build host's kernel headers.
 
 ### Output
 

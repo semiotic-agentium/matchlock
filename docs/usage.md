@@ -309,6 +309,61 @@ When spend reaches the limit, all outbound requests are blocked with HTTP 429. S
 
 For the full plugin configuration reference (including JSON config and writing custom plugins), see [Network Plugins](network-plugins.md).
 
+## eBPF Observability
+
+Matchlock can attach eBPF probes to the guest kernel to trace process lifecycle and file operations in real time. An eBPF tracer running inside the guest captures events and streams them to the host over vsock, where a plugin engine evaluates each event and can alert or kill offending processes.
+
+### Enabling eBPF Plugins
+
+```bash
+# Alert on sensitive file access (default patterns, alert only)
+matchlock run --image alpine:latest \
+  --ebpf-plugin sensitive_file_monitor \
+  -- sh
+
+# Kill processes that access sensitive files
+matchlock run --image alpine:latest \
+  --ebpf-plugin 'sensitive_file_monitor={"kill":true}' \
+  -- sh
+
+# Custom patterns with kill enforcement
+matchlock run --image alpine:latest \
+  --ebpf-plugin 'sensitive_file_monitor={"kill":true,"patterns":["/etc/shadow","/opt/secrets/*"]}' \
+  -- sh
+```
+
+The `--ebpf-plugin` flag accepts `TYPE` (default config) or `TYPE=JSON_CONFIG` (explicit config). It is repeatable for multiple plugins.
+
+### Debug Logging
+
+Capture all raw eBPF events to a JSONL file for post-hoc analysis:
+
+```bash
+matchlock run --image alpine:latest \
+  --ebpf-debug-log \
+  -- sh
+```
+
+Raw events are written to `ebpf-events.jsonl` in the VM state directory, regardless of plugin configuration.
+
+### Built-in Plugins
+
+| Plugin | What it does | CLI flag |
+|--------|-------------|----------|
+| `sensitive_file_monitor` | Alerts on (optionally kills) processes opening sensitive files | `--ebpf-plugin sensitive_file_monitor` |
+
+### SDK Usage
+
+```go
+// Go SDK
+sandbox := sdk.New("alpine:latest").
+    WithEBPFPlugin("sensitive_file_monitor", nil).                                  // alert-only
+    WithEBPFPlugin("sensitive_file_monitor", json.RawMessage(`{"kill":true}`)). // kill mode
+    WithEBPFDebugLog()                                                              // raw event capture
+```
+
+For the full eBPF plugin configuration reference and how to write your own, see [eBPF Plugins](ebpf-plugins.md).
+
 ## Environment Variables
 
 Non-secret environment variables are visible inside the VM and in VM state output.
@@ -622,3 +677,5 @@ See [VFS Interception](vfs-interception.md) for the full reference including Go 
 | `--event-log` | | string | | Event log file path |
 | `--run-id` | | string | sandbox ID | Run/session ID |
 | `--agent-system` | | string | | Agent system name |
+| `--ebpf-plugin` | | string[] | | eBPF event plugin (TYPE or TYPE=JSON_CONFIG) |
+| `--ebpf-debug-log` | | bool | false | Write raw eBPF events to debug JSONL file |

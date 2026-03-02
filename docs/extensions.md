@@ -20,12 +20,14 @@ graph TB
         STATE["State Manager (pkg/state)"]
         LC["Lifecycle Store (pkg/lifecycle)"]
         LOG["Event Emitter (pkg/logging)"]
+        EBPF["eBPF Engine (pkg/ebpf)"]
     end
 
     subgraph VM["Micro-VM"]
         INIT["guest-init (PID 1)"]
         AGENT["guest-agent (exec service)"]
         FUSED["guest-fused (FUSE daemon)"]
+        EBPF_T["ebpf-tracer"]
         ROOT["OCI Root Filesystem"]
     end
 
@@ -42,8 +44,11 @@ graph TB
     NET --> POL
     NET -. "vsock :5000" .-> AGENT
     VFS_H -. "vsock :5001" .-> FUSED
+    SB --> EBPF
     INIT --> AGENT
     INIT --> FUSED
+    INIT --> EBPF_T
+    EBPF_T -. "vsock :5003" .-> EBPF
 ```
 
 ### Data Flow
@@ -64,6 +69,7 @@ graph TB
 | 5000 | Host -> Guest | Exec service (command execution) |
 | 5001 | Guest -> Host | VFS service (filesystem operations) |
 | 5002 | Host -> Guest | Ready signal |
+| 5003 | Guest -> Host | eBPF events (process/file tracing) |
 
 ## Package Map
 
@@ -78,6 +84,7 @@ graph TB
 | `pkg/vm` | `pkg/vm/` | VM backend interface (`Backend`, `Machine`, `InteractiveMachine`). Platform implementations in `vm/darwin/` and `vm/linux/`. |
 | `pkg/image` | `pkg/image/` | OCI image pull, import, build. EROFS layer creation. Image metadata DB. |
 | `pkg/policy` | `pkg/policy/` | Network policy plugin engine. Gate, Route, Request, Response plugin interfaces and built-in plugins. |
+| `pkg/ebpf` | `pkg/ebpf/` | eBPF event plugin engine. Collector receives guest kernel events over vsock, engine runs plugin chain, emits alerts to shared event log, optionally kills offending processes. |
 | `pkg/net` | `pkg/net/` | Network interception. gVisor userspace stack (macOS), nftables transparent proxy (Linux), TLS MITM, HTTP interceptor. |
 | `pkg/vfs` | `pkg/vfs/` | Virtual filesystem. Provider interface, memory provider, real-fs provider, readonly wrapper, router, hook engine, CBOR-based VFS server. |
 | `pkg/rpc` | `pkg/rpc/` | JSON-RPC handler for SDK communication over stdin/stdout. |
@@ -154,6 +161,39 @@ type ResponsePlugin interface {
 A single plugin can implement multiple interfaces. The engine auto-sorts your plugin into the correct phase slices based on which interfaces it satisfies.
 
 **Convention:** Plugins log at `Debug` level only. The engine handles `Info` and `Warn` level logs for phase outcomes. Every plugin receives a pre-scoped `*slog.Logger` with `component=policy` and `plugin=<name>` already set.
+
+### Adding a New eBPF Plugin
+
+This follows the same plugin/factory/registry pattern as network policy plugins, but for kernel-level events.
+
+**Files to modify:**
+
+1. `pkg/ebpf/your_plugin.go` -- Create your plugin implementation
+2. `pkg/ebpf/registry.go` -- Register the factory in `init()`
+3. (Optional) `pkg/ebpf/your_plugin_test.go` -- Unit tests
+
+**Step-by-step guide:** See [eBPF Plugins: Writing a New Plugin](ebpf-plugins.md#writing-a-new-plugin) for the full walkthrough with code examples.
+
+**Key interfaces to implement:**
+
+```go
+// pkg/ebpf/plugin.go
+
+type Plugin interface {
+    Name() string
+}
+
+type EventPlugin interface {
+    Plugin
+    ProcessEvent(event *EBPFEvent) *EventVerdict
+}
+```
+
+The `EventVerdict` controls engine behavior: set `Alert: true` to emit to the event log, `Kill: true` to send `kill -9` to the guest process. Return `nil` for events your plugin does not care about.
+
+**Convention:** Plugins log at `Debug` level only. The engine handles `Info` (alerts) and `Warn` (kills) logging. Every plugin receives a pre-scoped `*slog.Logger` with `plugin=<name>` already set.
+
+**Fail-fast semantics:** Unlike the network plugin engine (which warns and skips bad plugins), the eBPF engine fails fast on unknown or misconfigured plugins. Sandbox creation will fail if a plugin type is not found in the registry or if a factory returns an error.
 
 ### Adding a New CLI Command
 
@@ -425,6 +465,16 @@ mise run check                    # All checks (Go + Python SDK)
 - `pkg/logging/event.go` -- Event type constants and data structs
 - `pkg/logging/emitter.go` -- Emitter that stamps metadata and dispatches to sinks
 - `pkg/logging/jsonl_writer.go` -- JSONL file writer sink
+
+### "I want to add or modify eBPF tracing plugins"
+
+- `pkg/ebpf/plugin.go` -- Plugin and EventPlugin interfaces, EBPFEvent struct, EventVerdict
+- `pkg/ebpf/registry.go` -- Factory registration (`init()`)
+- `pkg/ebpf/engine.go` -- Plugin orchestration, event processing, alert/kill dispatch
+- `pkg/ebpf/collector.go` -- Vsock UDS listener, JSONL parsing, debug log writing
+- `pkg/ebpf/sensitive_file_monitor.go` -- Reference built-in plugin implementation
+- `ebpf/` -- Guest-side eBPF tracer C source, Dockerfile, vmlinux.h
+- `pkg/sandbox/sandbox_linux.go` -- Wires engine + collector into sandbox lifecycle
 
 ## Architecture Decision Records
 

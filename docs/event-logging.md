@@ -61,6 +61,14 @@ Matchlock writes a persistent JSON-L event log capturing every decision made by 
 
 The HTTP interceptor is the only non-engine component that emits events (`http_request` and `http_response`), because it operates outside the plugin phase pipeline.
 
+The eBPF engine follows the same principle: eBPF plugins return `EventVerdict` structs, and the engine emits events with the type `ebpf_<plugin_name>`. eBPF events flow through a separate path:
+
+```
+Guest VM (ebpf-tracer) -> vsock :5003 -> Collector -> eBPF Engine -> Plugin chain -> Emitter
+```
+
+The eBPF engine shares the same `Emitter` instance as the policy engine, so eBPF and network policy events appear in the same event log file.
+
 ---
 
 ## Enabling
@@ -130,6 +138,7 @@ Every event has the same top-level shape:
 | `response_transform` | Policy engine | Response | Engine | Response transformation: usage logging or no-op. One per response plugin per request. |
 | `http_request` | HTTP interceptor | Transport | Interceptor | Outbound HTTP/HTTPS request forwarded upstream. Emitted after all policy phases complete. |
 | `http_response` | HTTP interceptor | Transport | Interceptor | Upstream response received before forwarding to guest. Paired with `http_request`. |
+| `ebpf_sensitive_file_monitor` | eBPF engine | -- | eBPF Engine | Sensitive file access detected by eBPF tracer inside guest VM. |
 
 ---
 
@@ -394,6 +403,48 @@ Intercepts OpenRouter API responses to extract token usage and cost data. Writes
 
 ---
 
+### `sensitive_file_monitor` (eBPF)
+
+| | |
+|---|---|
+| **Phase** | eBPF event processing |
+| **Interface** | `EventPlugin` |
+| **Returns** | `*EventVerdict` |
+| **Event** | `ebpf_sensitive_file_monitor` |
+| **Source** | `pkg/ebpf/sensitive_file_monitor.go` |
+
+Monitors FILE_OPEN events from the guest kernel eBPF tracer and alerts when a process opens a file matching a sensitive path pattern (e.g., `/etc/shadow`, SSH keys, TLS private keys). Optionally kills the offending process.
+
+| Decision | `action` | Logged |
+|----------|----------|--------|
+| File matches sensitive pattern (alert mode) | `"alert"` | Yes |
+| File matches sensitive pattern (kill mode) | `"killed"` | Yes + process killed |
+| File does not match any pattern | *(nil verdict, no event)* | No |
+| Event is not FILE_OPEN | *(nil verdict, no event)* | No |
+
+**Example event:**
+
+```json
+{
+  "ts": "2026-02-26T08:50:12.123456Z",
+  "run_id": "vm-48a6b77f",
+  "agent_system": "openclaw",
+  "event_type": "ebpf_sensitive_file_monitor",
+  "summary": "sensitive file access: cat opened /etc/shadow (matched /etc/shadow)",
+  "plugin": "sensitive_file_monitor",
+  "tags": ["ebpf"],
+  "data": {
+    "filepath": "/etc/shadow",
+    "pid": 42,
+    "comm": "cat",
+    "matched_pattern": "/etc/shadow",
+    "action": "killed"
+  }
+}
+```
+
+---
+
 ## Typical Event Sequences
 
 ### Standard API call (allowed, no routing)
@@ -448,6 +499,14 @@ route_decision     →  route passthrough suspicious.com by local_model_router
 ```
 
 Request blocked by `secret_injector` (returns error). No `request_transform` event, no `http_request`, no `http_response`.
+
+### eBPF: Sensitive file access detected
+
+```
+ebpf_sensitive_file_monitor  →  sensitive file access: cat opened /etc/shadow (matched /etc/shadow)
+```
+
+eBPF events are independent of the network policy pipeline. They appear in the same event log but are not triggered by HTTP requests. The `tags` field contains `["ebpf"]` for filtering.
 
 ---
 

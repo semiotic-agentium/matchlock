@@ -20,6 +20,7 @@ Matchlock is a Go-based micro-VM sandbox for running AI-generated code with:
   - Linux: nftables transparent proxy + HTTP/TLS MITM
   - macOS: native NAT or gVisor userspace stack when interception is required
 - VFS: pluggable providers in `pkg/vfs`
+- eBPF: kernel-level process/file tracing inside guest VMs (`pkg/ebpf`, `ebpf/`)
 
 ## Repo Map (High Signal)
 
@@ -32,6 +33,8 @@ Matchlock is a Go-based micro-VM sandbox for running AI-generated code with:
 - `pkg/net`: interception, MITM, policy plumbing
 - `pkg/rpc`: JSON-RPC server
 - `pkg/policy`: allowlist + secret replacement
+- `pkg/ebpf`: eBPF plugin engine, collector, event processing
+- `ebpf/`: guest-side eBPF tracer C source + Docker build
 - `pkg/state`: VM/subnet state on host
 - `internal/errx`: sentinel error wrapping helpers
 
@@ -107,6 +110,7 @@ if err != nil {
 - `5000`: exec service (host -> guest)
 - `5001`: VFS service (guest -> host)
 - `5002`: ready signal (host -> guest)
+- `5003`: eBPF events (guest -> host)
 
 ### Firecracker vsock connection model
 

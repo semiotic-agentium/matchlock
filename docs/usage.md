@@ -313,6 +313,8 @@ For the full plugin configuration reference (including JSON config and writing c
 
 Matchlock can attach eBPF probes to the guest kernel to trace process lifecycle and file operations in real time. An eBPF tracer running inside the guest captures events and streams them to the host over vsock, where a plugin engine evaluates each event and can alert or kill offending processes.
 
+> **Linux x86_64 only.** The eBPF tracer must be built separately before use — it is not included in `mise run build` or `brew install matchlock`. Run `./scripts/build-ebpf-tracer.sh` (requires Docker) to place the binary at `~/.cache/matchlock/ebpf-tracer`. See [eBPF Plugins](ebpf-plugins.md#prerequisites) for full prerequisites.
+
 ### Enabling eBPF Plugins
 
 ```bash

@@ -150,6 +150,18 @@ sudo modprobe kvm kvm_intel   # Intel CPUs
 sudo modprobe kvm kvm_amd     # AMD CPUs
 ```
 
+### eBPF Tracer (Linux x86_64 Only)
+
+The eBPF tracer is a separate static binary that runs inside the guest VM to capture process lifecycle and file operation events. It is **not** built by `mise run build` and is **not** included in `brew install matchlock`. You must build it explicitly:
+
+```bash
+./scripts/build-ebpf-tracer.sh
+```
+
+This requires Docker with BuildKit. The output is placed at `~/.cache/matchlock/ebpf-tracer`.
+
+Without this binary, `--ebpf-plugin` flags will be accepted but the guest tracer will not start — no events will be captured and no plugins will fire. See [eBPF Plugins](ebpf-plugins.md) for usage.
+
 ## Installation
 
 ### Install to System Path
@@ -220,6 +232,7 @@ VM state and lifecycle data are stored at:
 |----------|------------|
 | `MATCHLOCK_KERNEL` | Override kernel path (skip auto-download) |
 | `MATCHLOCK_BIN` | Override binary path for SDK client auto-detection |
+| `MATCHLOCK_EBPF_TRACER` | Override eBPF tracer binary path (Linux x86_64 only) |
 
 Matchlock also reads environment variables prefixed with `MATCHLOCK_` for any CLI flag (via Viper). Dashes and dots in flag names become underscores. For example, `--allow-host` can be set via `MATCHLOCK_RUN_ALLOW_HOST`.
 

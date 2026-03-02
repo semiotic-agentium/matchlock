@@ -56,6 +56,24 @@ Guest VM                                        Host
                                                 +-------------------------------------------+
 ```
 
+## Prerequisites
+
+| Requirement | Details |
+|-------------|---------|
+| **Platform** | Linux x86_64 only. The eBPF tracer targets `__TARGET_ARCH_x86`. macOS and arm64 Linux are not supported. |
+| **Tracer binary** | The `ebpf-tracer` binary must be built separately — it is not included in `mise run build` or `brew install matchlock`. |
+| **Docker** | Required to build the tracer (multi-stage Docker build). |
+
+### Building the tracer
+
+```bash
+./scripts/build-ebpf-tracer.sh
+```
+
+This places the binary at `~/.cache/matchlock/ebpf-tracer`. See [Building the eBPF Tracer](#building-the-ebpf-tracer) for details and path resolution.
+
+> **Important:** If you pass `--ebpf-plugin` without the tracer binary present, the host-side plugin engine will start but the guest will not launch the tracer. Events will never arrive and plugins will have no effect. No warning is emitted — check that the binary exists before relying on eBPF enforcement.
+
 ## How It Works
 
 1. **Guest boot** -- When eBPF is configured, the VM kernel command line includes `matchlock.ebpf=1`. The guest-init process launches `/opt/matchlock/ebpf-tracer` before applying seccomp restrictions, so the tracer runs with full root capabilities.

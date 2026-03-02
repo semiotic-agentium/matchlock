@@ -18,6 +18,15 @@ const (
 	TUNSETPERSIST = 0x400454cb
 )
 
+// selfPath returns the path to the current executable, for use in error hints.
+func selfPath() string {
+	p, err := os.Executable()
+	if err != nil {
+		return "$(which matchlock)"
+	}
+	return p
+}
+
 type ifreq struct {
 	name  [ifnameLen]byte
 	flags uint16
@@ -27,6 +36,9 @@ type ifreq struct {
 func CreateTAP(name string) (int, error) {
 	fd, err := syscall.Open(tunDevice, syscall.O_RDWR|syscall.O_CLOEXEC, 0)
 	if err != nil {
+		if os.IsPermission(err) {
+			return 0, errx.With(ErrTUNOpen, ": %v (hint: add your user to the 'netdev' group and log out/in, or run 'matchlock setup linux')", err)
+		}
 		return 0, errx.Wrap(ErrTUNOpen, err)
 	}
 
@@ -38,6 +50,9 @@ func CreateTAP(name string) (int, error) {
 		uintptr(syscall.TUNSETIFF), uintptr(unsafe.Pointer(&ifr)))
 	if errno != 0 {
 		syscall.Close(fd)
+		if errno == syscall.EPERM {
+			return 0, errx.With(ErrTUNSETIFF, ": %v (hint: run 'sudo %s setup linux' — capabilities are lost on every rebuild)", errno, selfPath())
+		}
 		return 0, errx.Wrap(ErrTUNSETIFF, errno)
 	}
 

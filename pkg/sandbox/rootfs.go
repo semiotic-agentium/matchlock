@@ -12,6 +12,29 @@ import (
 
 const defaultBootstrapRootfsMB = 64
 
+// lookPathSbin finds an executable by name, checking $PATH first then
+// common sbin directories that may not be in the user's PATH.
+func lookPathSbin(name string) (string, error) {
+	if p, err := exec.LookPath(name); err == nil {
+		return p, nil
+	}
+	for _, dir := range []string{"/sbin", "/usr/sbin", "/usr/local/sbin"} {
+		p := filepath.Join(dir, name)
+		if fi, err := os.Stat(p); err == nil && !fi.IsDir() {
+			return p, nil
+		}
+	}
+	return "", fmt.Errorf("%s not found in PATH or sbin directories", name)
+}
+
+// debugfsPath returns the path to the debugfs binary, checking sbin directories.
+func debugfsPath() string {
+	if p, err := lookPathSbin("debugfs"); err == nil {
+		return p
+	}
+	return "debugfs" // fall back to PATH lookup by exec.Command
+}
+
 func createExt4Image(path string, sizeMB int64) error {
 	if sizeMB <= 0 {
 		return errx.With(ErrCreateRootfs, ": invalid size %dMB", sizeMB)
@@ -32,9 +55,9 @@ func createExt4Image(path string, sizeMB int64) error {
 		return errx.With(ErrCreateRootfs, ": close %s: %w", path, err)
 	}
 
-	mke2fsPath, err := exec.LookPath("mke2fs")
+	mke2fsPath, err := lookPathSbin("mke2fs")
 	if err != nil {
-		mke2fsPath, err = exec.LookPath("mkfs.ext4")
+		mke2fsPath, err = lookPathSbin("mkfs.ext4")
 		if err != nil {
 			_ = os.Remove(path)
 			return errx.With(ErrCreateRootfs, ": mke2fs/mkfs.ext4 not found; install e2fsprogs")
@@ -113,7 +136,7 @@ func prepareOverlayUpperRootfs(rootfsPath string) error {
 		commands = append(commands, fmt.Sprintf("set_inode_field %s mode 0100755", inj.guestPath))
 	}
 
-	cmd := exec.Command("debugfs", "-w", rootfsPath)
+	cmd := exec.Command(debugfsPath(), "-w", rootfsPath)
 	cmd.Stdin = strings.NewReader(strings.Join(commands, "\n"))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return errx.With(ErrDebugfs, " prepare overlay upper: %w: %s", err, output)
@@ -137,7 +160,7 @@ func injectHostBinaryIntoRootfs(rootfsPath, hostPath, guestPath string) error {
 	commands = append(commands, fmt.Sprintf("write %s %s", hostPath, guestPath))
 	commands = append(commands, fmt.Sprintf("set_inode_field %s mode 0100755", guestPath))
 
-	cmd := exec.Command("debugfs", "-w", rootfsPath)
+	cmd := exec.Command(debugfsPath(), "-w", rootfsPath)
 	cmd.Stdin = strings.NewReader(strings.Join(commands, "\n"))
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return errx.With(ErrDebugfs, " inject host binary: %w: %s", err, output)
@@ -178,7 +201,7 @@ func injectConfigFileIntoRootfs(rootfsPath, guestPath string, content []byte) er
 	commands = append(commands, fmt.Sprintf("set_inode_field %s mode 0100644", guestPath))
 
 	cmdStr := strings.Join(commands, "\n")
-	cmd := exec.Command("debugfs", "-w", rootfsPath)
+	cmd := exec.Command(debugfsPath(), "-w", rootfsPath)
 	cmd.Stdin = strings.NewReader(cmdStr)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return errx.With(ErrDebugfs, ": %w: %s", err, output)

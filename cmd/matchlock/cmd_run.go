@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"syscall"
 	"time"
 
@@ -109,7 +111,7 @@ func init() {
 	runCmd.Flags().Bool("pull", false, "Always pull image from registry (ignore cache)")
 	runCmd.Flags().Bool("rm", true, "Remove sandbox after command exits (set --rm=false to keep running)")
 	runCmd.Flags().Bool("privileged", false, "Skip in-guest security restrictions (seccomp, cap drop, no_new_privs)")
-	runCmd.Flags().StringArray("ebpf-plugin", nil, "Enable an eBPF event plugin (TYPE or TYPE=JSON_CONFIG). Repeatable.")
+	runCmd.Flags().StringArray("ebpf-plugin", nil, "Enable an eBPF event plugin (TYPE or TYPE=JSON_CONFIG). Linux x86_64 only. Repeatable. Available: sensitive_file_monitor")
 	runCmd.Flags().Bool("ebpf-debug-log", false, "Write raw eBPF events to a debug JSONL file")
 	runCmd.Flags().StringP("workdir", "w", "", "Working directory inside the sandbox (default: image WORKDIR, then workspace path)")
 	runCmd.Flags().StringP("user", "u", "", "Run as user (uid, uid:gid, or username; overrides image USER)")
@@ -416,6 +418,18 @@ func runRun(cmd *cobra.Command, args []string) error {
 		config.EBPF = ebpfCfg
 	}
 
+	// eBPF validation: platform check and tracer binary availability
+	if config.EBPF != nil {
+		if runtime.GOOS != "linux" {
+			return fmt.Errorf("--ebpf-plugin is only supported on Linux (current platform: %s)", runtime.GOOS)
+		}
+		tracerPath := sandbox.DefaultEBPFTracerPath()
+		if _, statErr := os.Stat(tracerPath); statErr != nil {
+			fmt.Fprintf(os.Stderr, "Warning: eBPF tracer binary not found at %s\n", tracerPath)
+			fmt.Fprintf(os.Stderr, "  Guest tracing will not start. Build with: ./scripts/build-ebpf-tracer.sh\n")
+		}
+	}
+
 	if err := config.Network.Validate(); err != nil {
 		return err
 	}
@@ -441,6 +455,10 @@ func runRun(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: failed to start exec relay: %v\n", err)
 	}
 	defer execRelay.Stop()
+
+	if ebpfDebugLog {
+		fmt.Fprintf(os.Stderr, "eBPF debug log: %s\n", filepath.Join(stateMgr.Dir(sb.ID()), "ebpf-events.jsonl"))
+	}
 
 	if !rm {
 		fmt.Fprintf(os.Stderr, "Sandbox %s is running\n", sb.ID())

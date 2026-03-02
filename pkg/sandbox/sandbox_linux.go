@@ -231,6 +231,12 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		subnetCIDR = subnetInfo.GatewayIP + "/24"
 	}
 
+	ebpfEnabled := config.EBPF != nil && ebpfTracerAvailable()
+	if config.EBPF != nil && !ebpfEnabled {
+		slog.Warn("ebpf tracer binary not found, guest tracing will not start",
+			"expected_path", DefaultEBPFTracerPath())
+	}
+
 	vmConfig := &vm.VMConfig{
 		ID:                  id,
 		KernelPath:          kernelPath,
@@ -250,7 +256,7 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		SubnetCIDR:          subnetCIDR,
 		Workspace:           workspace,
 		Privileged:          config.Privileged,
-		EBPFEnabled:         config.EBPF != nil && ebpfTracerAvailable(),
+		EBPFEnabled:         ebpfEnabled,
 		ExtraDisks:          extraDisks,
 		DNSServers:          config.Network.GetDNSServers(),
 		Hostname:            hostname,
@@ -461,7 +467,16 @@ func New(ctx context.Context, config *api.Config, opts *Options) (sb *Sandbox, r
 		ebpfCollectorInst = ebpf.NewCollector(ebpfEngine, debugLogPath)
 		ebpfStopFn, err = ebpfCollectorInst.ServeUDSBackground(ebpfSocketPath)
 		if err != nil {
-			slog.Warn("ebpf collector failed to start", "error", err)
+			if proxy != nil {
+				proxy.Close()
+			}
+			if fwRules != nil {
+				fwRules.Cleanup()
+			}
+			machine.Close(ctx)
+			releaseSubnet()
+			stateMgr.Unregister(id)
+			return nil, fmt.Errorf("ebpf collector: %w", err)
 		}
 	}
 
